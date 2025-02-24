@@ -1,0 +1,18 @@
+# Byte-compiled / Cached files
+__pycache__/
+*.py[cod]
+*.swp
+
+# Virtual environments
+venv/
+env/
+
+# Logs and databases
+*.log
+*.sqlite3
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# VSCode settings
+.vscode/
