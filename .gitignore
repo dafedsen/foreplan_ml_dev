@@ -20,3 +20,6 @@ env/
 # Environment
 .env
 *.rest
+
+# Datasets
+db_dummy/
