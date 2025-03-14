@@ -1,7 +1,16 @@
 import cupy as cp
 from cuml.metrics.regression import mean_squared_error
+import re
+import cudf as cd
+import pandas as pd
+
+def extract_number(text):
+    match = re.search(r'\d+', text)
+    return int(match.group()) if match else None
 
 def adjusting_data(df, method, sigma):
+    df['hist_value'] = pd.to_numeric(df['hist_value'], errors='coerce').fillna(0)
+    df['flag_adj'] = df['flag_adj'].astype(str)
 
     if method == 'Lower/Upper Bound':
         mean = df['hist_value'].mean()

@@ -4,27 +4,23 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-from cuml.linear_model import LinearRegression
-from cuml.model_selection import train_test_split
-from cuml.metrics import r2_score
+from scripts.connection import *
+from scripts.functions import *
+
 import math
 import cudf as cd
-# from dask import delayed
-
 from datetime import timedelta
 import time
-
-# from dask.distributed import Client
 import logging
 
 logger = logging.getLogger(__name__)
 
-from scripts.connection import *
-from scripts.functions import *
+from cuml.tsa.auto_arima import AutoARIMA as auto_arima
+from cuml.metrics import r2_score
+from cuml.model_selection import train_test_split
 
-# @delayed
 def run_model(dbase, dbset):
-    logger.info("Linear Regression forecast running.")
+    logger.info("Auto ARIMA forecast running.")
     id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
     id_prj = dbase['id_prj'][0]
     id_version = extract_number(dbase['version_name'][0])
@@ -34,13 +30,13 @@ def run_model(dbase, dbset):
     t_forecast = get_forecast_time(dbase, dbset)    
 
     start_time = time.time()
-    pred, err = run_linear_regression(dbase, t_forecast, dbset)
+    pred, err = run_auto_arima(dbase, t_forecast, dbset)
     end_time = time.time()
 
-    logger.info("Sending Linear Regression forecast result.")
+    logger.info("Sending Auto ARIMA forecast result.")
     send_process_result(pred, id_cust)
 
-    logger.info("Sending Linear Regression forecast evaluation.")
+    logger.info("Sending Auto ARIMA forecast evaluation.")
     send_process_evaluation(err, id_cust)
 
     # update_process_status(id_prj, id_version, 'SUCCESS')
@@ -73,27 +69,42 @@ def predict_model(df, st, t_forecast):
 
         # Data Preparation
         df = df.sort_values(by='hist_date')
-       
-        df['hist_date'] = cd.to_datetime(df['hist_date'])
-        df['hist_date'] = (df['hist_date'] - df['hist_date'].min()).dt.days
+
+        df_t = df.copy()
+        df_t = df_t[['hist_date', 'hist_value']]
+        df_t.set_index('hist_date', inplace=True)
+        df_t.sort_index(inplace=True)
         
-        X = df['hist_date'].values.reshape(-1, 1).get()
-        y = df['hist_value'].values.get()
+        # df_t = df_t.to_pandas()
         
         # Data Splitting
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
+        train_size = int(0.9 * len(df_t))
+        train, test = df_t[:train_size], df_t[train_size:]
 
         # Initiate Model and Train
-        model = LinearRegression()
-        model.fit(X_train, y_train)
-        
+        model = auto_arima(train)
+        model.search(p=(2, 5), q=(2, 5),
+             P=range(2), Q=range(2), method="auto", truncate=100)
+        model.fit(method="ml")
+
+        #print('MODEL SUMMARY')
+        print(model.summary())
+
         # Model Predict
-        X_pred = get_weeks_by_number(t_forecast.shape[0] + X_test.shape[0])
-        y_pred = model.predict(X_pred)
+        y_pred = t_forecast.copy()
+        print('RUNNING')
+        y_pred['ds'] = y_pred['date']
+        y_pred.set_index('date', inplace=True)
+        y_pred.sort_index(inplace=True)
+
+        n_periods = len(y_pred)+1+len(test)
+        prediction = model.forecast(n_periods)
+        prediction = cd.DataFrame(prediction, columns=[level2])
+        prediction.reset_index(inplace=True)
 
         # Prediction Data Process
         pred['date'] = t_forecast['date']
-        pred[level2] = y_pred[X_test.shape[0]:]
+        pred[level2] = prediction.iloc[-len(t_forecast):][level2].values
         pred['level1'] = level1
         pred['adj_include'] = ADJUSTMENT
         pred['id_prj_prc'] = PROCESS
@@ -114,12 +125,12 @@ def predict_model(df, st, t_forecast):
     
     try:
         # Evaluating
-        y_pred_test = model.predict(X_test)
+        y_pred_test = pd.DataFrame(model.forecast(len(test)), index=test.index, columns=['y'])
 
-        rmse = get_rmse(y_test, y_pred_test)
-        r2 = r2_score(y_test, y_pred_test)
-        bias = get_bias(y_test, y_pred_test)
-        mape = mean_absolute_percentage_error(y_test, y_pred_test)
+        rmse = get_rmse(test['hist_value'], y_pred_test['y'])
+        r2 = r2_score(test['hist_value'], y_pred_test['y'])
+        bias = get_bias(test['hist_value'].to_numpy(), y_pred_test['y'].to_numpy())
+        mape = mean_absolute_percentage_error(test['hist_value'], y_pred_test['y'])
 
         if math.isinf(mape) == True:
             mape = 999999999
@@ -138,8 +149,9 @@ def predict_model(df, st, t_forecast):
         err['level2'] = level2
         err['adj_include'] = ADJUSTMENT
         err['id_prj_prc'] = PROCESS
-    
+
     except Exception as e:
+        print('ERROR EXCEPTION', e)
         rmse = 999999999
         r2 = 999999999
         bias = 999999999
@@ -161,7 +173,8 @@ def predict_model(df, st, t_forecast):
 
     return pred, err
 
-def run_linear_regression(dbase, t_forecast, dbset):
+
+def run_auto_arima(dbase, t_forecast, dbset):
 
     project = dbase['id_prj'][0]
     id_version = extract_number(dbset['version_name'][0])
@@ -176,7 +189,7 @@ def run_linear_regression(dbase, t_forecast, dbset):
     total_loop = len(level1_list) * len(level2_list)
     current_loop = 0
 
-    lr_settings = dbset[dbset['model_name'] == 'Linear Regression']
+    lr_settings = dbset[dbset['model_name'] == 'Auto ARIMA']
     lr_settings = lr_settings[['adj_include', 'id_prj_prc', 'level1', 'level2', 'model_name', 'out_std_dev', 'ad_smooth_method']]
 
     id_prj_prc_y = lr_settings[lr_settings['adj_include'] == 'Yes']['id_prj_prc'].iloc[0]
@@ -212,8 +225,11 @@ def run_linear_regression(dbase, t_forecast, dbset):
         for level2 in level2_list:
             df = dbase[(dbase['level1'] == level1) & (dbase['level2'] == level2)]
             df.reset_index(inplace=True, drop=True)
-      
-            st = lr_settings[(lr_settings['level1'] == level1) & (lr_settings['level2'] == level2)]
+
+            st = lr_settings[
+                (lr_settings['level1'] == level1) & 
+                (lr_settings['level2'] == level2)
+                ]
             st_y_adj = st[st['adj_include'] == 'Yes']
             st_n_adj = st[st['adj_include'] == 'No']
 
@@ -221,42 +237,39 @@ def run_linear_regression(dbase, t_forecast, dbset):
             st_n_adj.reset_index(inplace=True, drop=True)
 
             # Run Adjusted Data
-            print(df)
             y_pred, y_err = predict_model(df, st_y_adj, t_forecast)
-            level1_forecast = cd.merge(level1_forecast, y_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
-            level1_error = cd.concat([level1_error, y_err], ignore_index=True)
+            level1_forecast = pd.merge(level1_forecast, y_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
+            level1_error = pd.concat([level1_error, y_err], ignore_index=True)
 
             # Run Unadjusted Data
             n_pred, n_err = predict_model(df, st_n_adj, t_forecast)
-            level1_forecast_n = cd.merge(level1_forecast_n, n_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
-            level1_error_n = cd.concat([level1_error_n, n_err], ignore_index=True)
+            level1_forecast_n = pd.merge(level1_forecast_n, n_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
+            level1_error_n = pd.concat([level1_error_n, n_err], ignore_index=True)
 
             current_loop = current_loop + 1
             progress = (current_loop / total_loop)
-            # update_running_model_process(project, id_version, progress)
-            
 
         # Append Adjusted and Unadjusted
-        forecast_result = cd.concat([forecast_result, level1_forecast])
-        forecast_result = cd.concat([forecast_result, level1_forecast_n])
+        forecast_result = pd.concat([forecast_result, level1_forecast])
+        forecast_result = pd.concat([forecast_result, level1_forecast_n])
 
-        error_result = cd.concat([error_result, level1_error])
-        error_result = cd.concat([error_result, level1_error_n])
+        error_result = pd.concat([error_result, level1_error])
+        error_result = pd.concat([error_result, level1_error_n])
 
         forecast_result['id_prj'] = project
         forecast_result['id_version'] = id_version
 
         error_result['id_prj'] = project
         error_result['id_version'] = id_version
-    
+
     forecast_result = forecast_result.melt(
-        id_vars=['date', 'id_prj', 'id_version', 'level1', 'adj_include', 'id_prj_prc'], 
+        id_vars=['date', 'id_prj', 'version_name', 'level1', 'adj_include', 'id_prj_prc'], 
         var_name='level2', 
         value_name='hist_value'
         )
-    forecast_result['id_model'] = 3
+    forecast_result['id_model'] = 1
 
-    forecast_result['date'] = cd.to_datetime(forecast_result['date'])
+    forecast_result['date'] = pd.to_datetime(forecast_result['date'])
     forecast_result = forecast_result.groupby(['level1', 'level2', 'adj_include', 'id_prj_prc']).apply(
         lambda group: group.sort_values('date').head(t_forecast.shape[0])
     ).reset_index(drop=True)
@@ -265,12 +278,12 @@ def run_linear_regression(dbase, t_forecast, dbset):
     forecast_result['partition_cust_id'] = id_cust
 
     error_result = error_result.melt(
-        id_vars=['level1', 'adj_include','id_prj_prc', 'level2', 'id_prj', 'id_version'],
+        id_vars=['level1', 'adj_include', 'id_prj_prc', 'level2', 'id_prj', 'version_name'],
         value_vars=['rmse', 'r2', 'mape', 'bias'],
         var_name='err_method',
         value_name='err_value'
     )
-    error_result['id_model'] = 3
+    error_result['id_model'] = 1
     error_result['partition_cust_id'] = id_cust
     error_result = error_result.drop_duplicates()
     error_result.reset_index(drop=True, inplace=True)
