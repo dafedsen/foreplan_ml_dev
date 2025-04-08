@@ -6,8 +6,9 @@ from sqlalchemy.pool import QueuePool
 from sqlalchemy.sql import text
 from psycopg2.extras import execute_values
 import math
+import datetime
 
-DB_HOST = "10.250.167.16"
+DB_HOST = "10.250.98.90"
 DB_PORT = 5443
 DB_USER = "edsen_foreplan_admin"
 DB_PASS = "Foreplan%402025"
@@ -96,7 +97,8 @@ def send_process_result(df, id_cust):
         # Step 2: INSERT new records
         columns = [col for col in df.columns if col != 'id']  # Exclude 'id' if auto-increment
         insert_columns = ', '.join(columns)
-        values_placeholder = ', '.join(['%s'] * len(columns))  # Generate placeholders dynamically
+        values_placeholder = ', '.join(['%s'] * len(columns))
+        print(values_placeholder)
         insert_query = f"INSERT INTO {partition_name} ({insert_columns}) VALUES {values_placeholder}"
 
         # Convert DataFrame to list of tuples excluding 'id' if necessary
@@ -121,6 +123,8 @@ def send_process_evaluation(df, id_cust):
     if isinstance(df, cd.DataFrame):    
         df = df.to_pandas()
 
+    df['err_value'] = df['err_value'].apply(lambda x: round(x, 3))
+
     partition_name = f'fplan_prj_prc_eval_custid_{id_cust}'  # Target partition
     id_prj_prc_values = df['id_prj_prc'].unique().tolist()  # Get all project IDs
     id_model_values = df['id_model'].unique().tolist()
@@ -131,9 +135,10 @@ def send_process_evaluation(df, id_cust):
         cursor.execute(delete_query, (tuple(id_prj_prc_values), tuple(id_model_values)))
 
         # Step 2: INSERT new records
-        columns = [col for col in df.columns if col != 'id']  # Exclude 'id' if auto-increment
+        columns = [col for col in df.columns if col != 'id']
         insert_columns = ', '.join(columns)
         values_placeholder = ', '.join(['%s'] * len(columns))  # Generate placeholders dynamically
+        print(values_placeholder)
         insert_query = f"INSERT INTO {partition_name} ({insert_columns}) VALUES {values_placeholder}"
 
         # Convert DataFrame to list of tuples excluding 'id' if necessary
@@ -167,14 +172,32 @@ def update_process_status(id_prj, id_version, status):
 
     engine.dispose()
 
-def update_process_status_progress(id_prj, id_version, status_progress):
-    status_progress = math.ceil(status_progress)
+def check_update_process_status_success(id_prj, id_version):
+
+    query = text("SELECT status_progress FROM fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
+    params = {
+        "id_prj": int(id_prj),
+        "id_version": int(id_version),
+    }
+    
+    with engine.connect() as conn:
+        result = conn.execute(query, params)
+        result = result.fetchone()
+        status_progress = result[0]
+
+    if status_progress >= 100:
+        update_process_status(id_prj, id_version, "SUCCESS")
+        return True
+    
+    return False
+
+def reset_process_status_progress(id_prj, id_version):
 
     query = text("UPDATE fplan_prj_prc SET status_progress = :status_progress WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
-        "status_progress": int(status_progress)
+        "status_progress": int(0)
     }
     
     with engine.connect() as conn:
@@ -183,14 +206,38 @@ def update_process_status_progress(id_prj, id_version, status_progress):
 
     engine.dispose()
 
-def reset_process_status_progress(id_prj, id_version):
-    status_progress = math.ceil(status_progress)
-
-    query = text("UPDATE fplan_prj_prc SET status_progress = :status_progress WHERE id_prj = :id_prj AND id_version = :id_version")
+def update_process_status_progress(id_prj, id_version):
+    query = text("SELECT running_model FROM fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
-        "status_progress": int(0)
+    }
+    
+    with engine.connect() as conn:
+        result = conn.execute(query, params)
+        result = result.fetchone()
+        running_models = result[0]
+
+    query = text("SELECT model_finished FROM fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
+    params = {
+        "id_prj": int(id_prj),
+        "id_version": int(id_version),
+    }
+    
+    with engine.connect() as conn:
+        result = conn.execute(query, params)
+        result = result.fetchone()
+        model_finished = result[0]
+
+    status_progress = math.ceil((model_finished / running_models) * 100)
+    update_date = datetime.datetime.now()
+
+    query = text("UPDATE fplan_prj_prc SET status_progress = :status_progress , updated_date = :update_date WHERE id_prj = :id_prj AND id_version = :id_version")
+    params = {
+        "id_prj": int(id_prj),
+        "id_version": int(id_version),
+        "status_progress": int(status_progress),
+        "update_date": update_date
     }
     
     with engine.connect() as conn:
@@ -229,9 +276,8 @@ def reset_model_finished(id_prj, id_version):
 
     engine.dispose()
 
-def update_running_model_process(id_prj, id_version, current_process):
-
-    query = text("SELECT running_model FROM fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
+def update_model_finished(id_prj, id_version, current_process):
+    query = text("SELECT model_finished FROM fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
@@ -240,44 +286,86 @@ def update_running_model_process(id_prj, id_version, current_process):
     with engine.connect() as conn:
         result = conn.execute(query, params)
         result = result.fetchone()
-        running_models = result[0]
+        model_finished = result[0]
+
+    model_finsihed_update = model_finished + current_process
 
     query = text("UPDATE fplan_prj_prc SET model_finished = :model_finished WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
-        "model_finished": float(current_process)
+        "model_finished": float(model_finsihed_update)
     }
 
-    with engine.connect() as conn:
-        conn.execute(query, params)
-        conn.commit()
-
-
-    status_progress = math.ceil((current_process / running_models) * 100)
-    query = text("UPDATE fplan_prj_prc SET status_progress = :status_progress WHERE id_prj = :id_prj AND id_version = :id_version")
-    params = {
-        "id_prj": int(id_prj),
-        "id_version": int(id_version),
-        "status_progress": int(status_progress)
-    }
-    
     with engine.connect() as conn:
         conn.execute(query, params)
         conn.commit()
 
     engine.dispose()
 
-def get_dataset(dbpath):
-    df = cd.read_csv(dbpath)
-    df['hist_date'] = cd.to_datetime(df['hist_date'], format='%Y-%m-%d')
-    df.sort_values('hist_date')
-    df['hist_value'] = df['hist_value'].astype(float)
-    return df
+def update_end_date(id_prj, id_version):
+    end_date = datetime.datetime.now()
+    query = text("UPDATE fplan_prj_prc SET end_date = :end_date WHERE id_prj = :id_prj AND id_version = :id_version")
+    params = {
+        "id_prj": int(id_prj),
+        "id_version": int(id_version),
+        "end_date": end_date
+    }
 
-def get_setting(stpath):
-    st = cd.read_csv(stpath)
-    return st
+    with engine.connect() as conn:
+        conn.execute(query, params)
+        conn.commit()
+
+    engine.dispose()
+# def update_running_model_process(id_prj, id_version, current_process):
+
+#     query = text("SELECT running_model FROM fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
+#     params = {
+#         "id_prj": int(id_prj),
+#         "id_version": int(id_version),
+#     }
+    
+#     with engine.connect() as conn:
+#         result = conn.execute(query, params)
+#         result = result.fetchone()
+#         running_models = result[0]
+
+#     query = text("UPDATE fplan_prj_prc SET model_finished = :model_finished WHERE id_prj = :id_prj AND id_version = :id_version")
+#     params = {
+#         "id_prj": int(id_prj),
+#         "id_version": int(id_version),
+#         "model_finished": float(current_process)
+#     }
+
+#     with engine.connect() as conn:
+#         conn.execute(query, params)
+#         conn.commit()
+
+
+#     status_progress = math.ceil((current_process / running_models) * 100)
+#     query = text("UPDATE fplan_prj_prc SET status_progress = :status_progress WHERE id_prj = :id_prj AND id_version = :id_version")
+#     params = {
+#         "id_prj": int(id_prj),
+#         "id_version": int(id_version),
+#         "status_progress": int(status_progress)
+#     }
+    
+#     with engine.connect() as conn:
+#         conn.execute(query, params)
+#         conn.commit()
+
+#     engine.dispose()
+
+# def get_dataset(dbpath):
+#     df = cd.read_csv(dbpath)
+#     df['hist_date'] = cd.to_datetime(df['hist_date'], format='%Y-%m-%d')
+#     df.sort_values('hist_date')
+#     df['hist_value'] = df['hist_value'].astype(float)
+#     return df
+
+# def get_setting(stpath):
+#     st = cd.read_csv(stpath)
+#     return st
 
 def get_forecast_time(dbase, dbset):
     df = dbase.to_pandas()
@@ -299,25 +387,27 @@ def get_forecast_time(dbase, dbset):
     else:
        return 'Error Forecsat Time Setting'
 
-    new_dates = pd.date_range(start=last_date, periods=fcast_time, freq=time_freq)
+    new_dates = pd.date_range(start=last_date, periods=fcast_time+1, freq=time_freq)
     new_dates_df = pd.DataFrame({'date': new_dates})
+    new_dates_df = new_dates_df.iloc[1:]
     new_dates_df = cd.DataFrame.from_pandas(new_dates_df)
+    print(new_dates_df)
 
     return new_dates_df
 
-def get_default_time(dbpath, stpath):
-    hist = get_dataset(dbpath)['hist_date']
-    hist.name = 'date'
-    hist.drop_duplicates(inplace=True)
-    hist = hist.sort_values()
+# def get_default_time(dbpath, stpath):
+#     hist = get_dataset(dbpath)['hist_date']
+#     hist.name = 'date'
+#     hist.drop_duplicates(inplace=True)
+#     hist = hist.sort_values()
 
-    fcast = get_forecast_time(dbpath, stpath)['date']
+#     fcast = get_forecast_time(dbpath, stpath)['date']
 
-    def_time = cd.concat([hist, fcast], ignore_index=True)
-    def_time = cd.DataFrame(def_time, columns=['date'])
-    def_time.reset_index(inplace=True, drop=True)
+#     def_time = cd.concat([hist, fcast], ignore_index=True)
+#     def_time = cd.DataFrame(def_time, columns=['date'])
+#     def_time.reset_index(inplace=True, drop=True)
 
-    return def_time
+#     return def_time
 
 # update_process_status_progress(101, 1, 0.1)
 

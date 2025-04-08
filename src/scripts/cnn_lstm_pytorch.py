@@ -7,12 +7,13 @@ if BASE_DIR not in sys.path:
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Dataset, TensorDataset
-from cuml.preprocessing import MinMaxScaler
+from cuml.preprocessing import MinMaxScaler, LabelEncoder
 from cuml.metrics import r2_score, mean_squared_error
 
 import cudf as cd
 import cupy as cp
 import numpy as np
+import pandas as pd
 import math
 from datetime import timedelta
 import time
@@ -20,6 +21,7 @@ import time
 import logging
 
 logger = logging.getLogger(__name__)
+DEVICE = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
 from scripts.connection import *
 from scripts.functions import *
@@ -30,13 +32,15 @@ def run_model(dbase, dbset):
     id_prj = dbase['id_prj'][0]
     id_version = extract_number(dbase['version_name'][0])
 
-    update_process_status(id_prj, id_version, 'RUNNING')
-
+    
     t_forecast = get_forecast_time(dbase, dbset)    
 
     start_time = time.time()
     pred, err = run_cnn_lstm(dbase, t_forecast, dbset)
     end_time = time.time()
+
+    update_model_finished(id_prj, id_version, 1)
+    update_process_status_progress(id_prj, id_version)
 
     logger.info("Sending CNN LSTM forecast result.")
     send_process_result(pred, id_cust)
@@ -44,8 +48,11 @@ def run_model(dbase, dbset):
     logger.info("Sending CNN LSTM forecast evaluation.")
     send_process_evaluation(err, id_cust)
 
-    # update_process_status(id_prj, id_version, 'SUCCESS')
     print(str(timedelta(seconds=end_time - start_time)))
+    status = check_update_process_status_success(id_prj, id_version)
+
+    if status:
+        update_end_date(id_prj, id_version)
 
     return str(timedelta(seconds=end_time - start_time))
 
@@ -57,25 +64,22 @@ def create_sequences(data, n_lookback, n_forecast):
     return cp.array(X), cp.array(Y)
 
 def run_cnn_lstm(dbase, t_forecast, dbset):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     project = dbase['id_prj'][0]
-    version = dbase['version_name'][0]
-
-    level1_list = dbase['level1'].unique().to_arrow().to_pylist()
-    level1_list = sorted(level1_list)
-
-    level2_list = dbase['level2'].unique().to_arrow().to_pylist()
-    level2_list = sorted(level2_list)
+    id_version = extract_number(dbset['version_name'][0])
+    id_cust = get_id_cust_from_id_prj(project)
 
     prc_settings = dbset[dbset['model_name'] == 'CNN LSTM']
-    prc_settings = prc_settings[['adj_include', 'level1', 'level2', 'model_name', 'out_std_dev', 'ad_smooth_method']]
+    prc_settings = prc_settings[['adj_include', 'id_prj_prc', 'level1', 'level2', 'model_name', 'out_std_dev', 'ad_smooth_method']]
+
+    id_prj_prc_y = prc_settings[prc_settings['adj_include'] == 'Yes']['id_prj_prc'].iloc[0]
+    id_prj_prc_n = prc_settings[prc_settings['adj_include'] == 'No']['id_prj_prc'].iloc[0]
+
+    df = dbase.drop(columns=['id_prj', 'version_name'])
+    df['hist_date'] = cd.to_datetime(df['hist_date'])
 
     dbase_N = dbase.copy()
-    #dbase_N['flag_adj'] = 'N'
-
     dbase_Y = dbase.copy()
-    #dbase_Y['flag_adj'] = 'Y'
 
     for (level1, level2), group_data in dbase.groupby(['level1', 'level2']):
         # Select data for the current group
@@ -108,146 +112,270 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
     dbase_Y['flag_adj'] = 'Y'
     dbase_N['flag_adj'] = 'N'
 
-    df_train = pd.concat([dbase_N, dbase_Y], ignore_index=True)
-    pivot_data = df_train.pivot_table(
-        index=['hist_date'],
-        columns=['level1', 'level2', 'flag_adj'],
-        values='hist_value'
-    ).reset_index()
-
-    print(pivot_data)
-    print(type(pivot_data))
-    pivot_data = pivot_data.to_pandas()
+    df_base = cd.concat([dbase_Y, dbase_N], ignore_index=True)
+    df = df_base[['level1', 'level2', 'flag_adj', 'hist_date', 'hist_value']]
+    df = df.sort_values(by=['level1', 'level2', 'flag_adj', 'hist_date'])
 
     scaler = MinMaxScaler()
-    scaled_data = scaler.fit_transform(pivot_data.iloc[:, 1:])
+    df['hist_value'] = scaler.fit_transform(df[['hist_value']])
 
-    print(scaled_data.shape)
-    print(scaled_data)
-    print(type(scaled_data))
+    encoders = {}
+    for col in ['level1', 'level2', 'flag_adj']:
+        encoders[col] = LabelEncoder()
+        df[col] = encoders[col].fit_transform(df[col])
 
     n_lookback = 30
-    n_forecast = 1
+    n_forecast = t_forecast.shape[0]
 
-    train_size = int(len(scaled_data) * 0.9)
-    train_data = scaled_data[:train_size, :]
-    test_data = scaled_data[train_size - n_lookback:, :]
+    X, Y = create_sequences(df.drop(columns=['hist_date']).to_cupy(), n_lookback, n_forecast)
+    X = cp.asnumpy(X)
+    Y = cp.asnumpy(Y)
 
-    # Prepare training sequences
-    X_train, Y_train = [], []
-    for i in range(n_lookback, train_size - n_forecast + 1):
-        X_train.append(train_data[i - n_lookback:i, :])
-        Y_train.append(train_data[i:i + n_forecast, :])
+    split_idx = int(len(X) * 0.8)
+    X_train, X_test = X[:split_idx], X[split_idx:]
+    Y_train, Y_test = Y[:split_idx], Y[split_idx:]
 
-    X_train = np.array(X_train).get()
-    Y_train = np.array(Y_train).get()
+    train_dataset = TimeSeriesDataset(X_train, Y_train)
+    test_dataset = TimeSeriesDataset(X_test, Y_test)
 
-    # Prepare test sequences
-    X_test = []
-    for i in range(n_lookback, len(test_data) - n_forecast + 1):
-        X_test.append(test_data[i - n_lookback:i, :])
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
-    X_test = np.array(X_test)
-    actual_data = test_data[n_lookback:, :]
+    input_size = X_train.shape[2]
+    hidden_size = 128
+    num_layers = 2
+    output_size = n_forecast
+    dropout = 0.3
+    learning_rate = 0.001
+    num_epochs = 10
+    try:
+        model = AdvancedLSTM(input_size, hidden_size, num_layers, output_size, dropout, bidirectional=True)
+        criterion = nn.MSELoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    model = Sequential()
-    model.add(Bidirectional(LSTM(50, return_sequences=True, kernel_regularizer=l2(0.01)), input_shape=(X_train.shape[1], X_train.shape[2])))
-    model.add(Dropout(0.2))
-    model.add(Bidirectional(LSTM(50, return_sequences=True)))
-    model.add(Dropout(0.2))
-    model.add(LSTM(50))
-    model.add(Dense(Y_train.shape[2]))
+        model.train()
+        for epoch in range(num_epochs):
+            for X_batch, Y_batch in train_loader:
+                optimizer.zero_grad()
+                Y_pred = model(X_batch)
+                loss = criterion(Y_pred, Y_batch)
+                loss.backward()
+                optimizer.step()
+            print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
+    except Exception as e:
+        print('ERROR EXCEPTION TRAINING MODEL: ', e)
 
-    model.compile(optimizer='adam', loss='mse')
-    early_stopping = EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)
-    model.fit(X_train, Y_train, epochs=100, batch_size=32, validation_split=0.2, callbacks=[early_stopping])
+    try:
+        model.to(DEVICE)
+        model.eval()
+        predictions, actuals = [], []
 
-    forecasts = []
-    errors = []
+        with torch.no_grad():
+            for X_batch, Y_batch in test_loader:
+                X_batch = X_batch.to(DEVICE)  # Move input to the same device as model
+                Y_batch = Y_batch.to(DEVICE)
+                y_pred = model(X_batch).squeeze()
+                predictions.extend(y_pred.cpu().numpy())
+                actuals.extend(Y_batch.cpu().numpy())
 
-    for col in range(scaled_data.shape[1]):  # Iterate over columns
-        x_input = scaled_data[-n_lookback:, :].reshape(1, n_lookback, scaled_data.shape[1])  # Use the last lookback sequence
-        future_forecast = []
+        # Convert to NumPy arrays
+        predictions = cp.array(predictions).reshape(-1, 1)
+        actuals = cp.array(actuals).reshape(-1, 1)
 
-        for _ in range(365):  # Predict for 365 days
-            if isinstance(x_input, cp.ndarray):
-                x_input = x_input.get()
-                
-            y_pred = model.predict(x_input, verbose=0)
-            future_forecast.append(y_pred.flatten()[col])
+        # Mismatch fix
+        dummy_features = cp.zeros((predictions.shape[0], scaler.n_features_in_ - 1))
+        predictions_expanded = cp.hstack([dummy_features, predictions])
 
-            y_pred_new = np.zeros((1, 1, scaled_data.shape[1]))
-            y_pred_new[0, 0, col] = y_pred.flatten()[col]  # Update only the target column
-            x_input = np.append(x_input[:, 1:, :], y_pred_new, axis=1)
+        dummy_features = cp.zeros((actuals.shape[0], scaler.n_features_in_ - 1))
+        actuals_expanded = cp.hstack([dummy_features, actuals])
 
-        # Recreate full feature set for inverse transform
-        future_forecast = np.array(future_forecast)
-        dummy_features = np.zeros((365, scaled_data.shape[1]))
-        dummy_features[:, 0] = future_forecast
+        # Inverse transform to original scale
+        predictions = scaler.inverse_transform(predictions_expanded)
+        predictions = predictions[:, -1]
 
-        # Inverse scale the forecast
-        dummy_features = dummy_features.get()
-        future_forecast_full = scaler.inverse_transform(dummy_features)
-        future_forecast = future_forecast_full[:, col]
+        actuals = scaler.inverse_transform(actuals_expanded)
+        actuals = actuals[:, -1]
 
-        print(dummy_features.shape)
-        print('CHECK')
-        print(test_data.shape)
+        # Compute Metrics
+        rmse = cp.sqrt(mean_squared_error(actuals, predictions))
+        r2 = r2_score(actuals, predictions)
+        bias = (cp.sum(predictions - actuals) / cp.sum(actuals)) * 100
+        mape = cp.mean(cp.abs((predictions - actuals) / actuals)) * 100
+    
+    except Exception as e:
+        print('ERROR EXCEPTION EVALUATING MODEL: ', e)
+        rmse = 999999999
+        r2 = 999999999
+        bias = 999999999
+        mape = 999999999
 
-        # Get actual values for comparison
-        actual_values = scaler.inverse_transform(test_data)[:, col][-365:]
+    try:
+        forecast_results = []
+        evaluation_results = []
 
-        n_actual = min(len(actual_values), len(future_forecast))
-        actual_values = actual_values[:n_actual]
-        future_forecast_test = future_forecast[:n_actual]
+        st = dbset.to_pandas()
+        time_type = st['fcast_type'][0]
+        time_freq = get_time_freq_by_type(time_type)
 
-        # Calculate errors
-        
-        print(type(actual_values))
-        print(type(future_forecast_test))
-        
-        rmse = cp.sqrt(mean_squared_error(actual_values, future_forecast_test))
-        r2 = r2_score(actual_values, future_forecast_test)
-        bias = (cp.sum(future_forecast_test - actual_values) / cp.sum(actual_values)) * 100
-        
-        actual_values = cp.asarray(actual_values)
-        future_forecast_test = cp.asarray(future_forecast_test)
-        print(type(actual_values))
-        print(type(future_forecast_test))
-        
-        mape = cp.mean(cp.abs((future_forecast_test - actual_values) / actual_values)) * 100
+        for (level1, level2, flag_adj), group_df in df.groupby(['level1', 'level2', 'flag_adj']):
+            print(f"Forecasting for {level1} - {level2} - {flag_adj}")
 
-        print(pivot_data.columns)
-        col_name = pivot_data.columns[col + 1]  # Get column name (exclude date)
-        print(col_name)
-        level1, level2, flag_adj = col_name
+            # Get last LOOKBACK days for the group
+            last_data = group_df[['hist_value', 'level1', 'level2', 'flag_adj']].values[-n_lookback:]
+            forecast_input = torch.tensor(last_data, dtype=torch.float32).to(DEVICE).unsqueeze(0)
 
-        # Create a DataFrame for the forecast
-        print(type(pivot_data['hist_date']))
-        last_date = pivot_data['hist_date'].iloc[-1]
-        forecast_dates = pandas.date_range(start=last_date + pandas.Timedelta(days=1), periods=365)
-        forecast_df = pd.DataFrame({
-            'date': forecast_dates,
-            'level1': level1,
-            'level2': level2,
-            'flag_adj': flag_adj,
-            'forecast': future_forecast
+            # Generate Forecast
+            forecast_result = []
+            for _ in range(t_forecast.shape[0]):
+                y_pred = model(forecast_input).cpu().detach().numpy().flatten()
+                forecast_result.append(y_pred[-1])
+
+                # Update input for next step
+                new_input = np.array([[y_pred[-1], level1, level2, flag_adj]])
+                forecast_input = torch.cat((forecast_input[:, 1:, :], torch.tensor(new_input, dtype=torch.float32).unsqueeze(0).to(DEVICE)), dim=1)
+
+            # Convert forecast back to original scale
+            forecast_result = scaler.inverse_transform(np.array(forecast_result).reshape(-1, 1)).flatten()
+
+            # Store Forecast
+            future_dates = pd.date_range(start=group_df['hist_date'].max(), periods=n_forecast+1, freq=time_freq)[1:]
+            forecast_df = pd.DataFrame({'date': future_dates, 'level1': encoders['level1'].inverse_transform([level1])[0], 
+                                        'level2': encoders['level2'].inverse_transform([level2])[0], 
+                                        'flag_adj': encoders['flag_adj'].inverse_transform([flag_adj])[0], 
+                                        'forecast': forecast_result})
+            forecast_results.append(forecast_df)
+
+            evaluation_df = pd.DataFrame({
+                'rmse': [float(rmse)], 'r2': [float(r2)], 'bias': [float(bias)], 'mape': [float(mape)],
+                'level1': encoders['level1'].inverse_transform([level1])[0], 
+                'level2': encoders['level2'].inverse_transform([level2])[0],
+                'flag_adj': encoders['flag_adj'].inverse_transform([flag_adj])[0]
+            })
+            evaluation_results.append(evaluation_df)
+
+        # Combine Forecast Results
+        final_forecast = pd.concat(forecast_results)
+        final_forecast['id_prj_prc'] = final_forecast['flag_adj'].map({
+            'Y' : id_prj_prc_y,
+            'N' : id_prj_prc_n
         })
-        forecasts.append(forecast_df)
+        final_forecast['id_model'] = 4
+        final_forecast['partition_cust_id'] = id_cust
+        final_forecast.rename(columns={'date': 'fcast_date', 'forecast': 'fcast_value'}, inplace=True)
+        final_forecast = final_forecast[['id_prj_prc', 'id_model', 'partition_cust_id', 'level1', 'level2', 'fcast_date', 'fcast_value']]
+        final_forecast['fcast_value'] = final_forecast['fcast_value'].astype(float).round(3)
+        final_forecast = final_forecast.dropna()
+        pred = cd.from_pandas(final_forecast)
 
-        errors.append({
-            'level1': level1,
-            'level2': level2,
-            'flag_adj': flag_adj,
-            'rmse': rmse,
-            'r2': r2,
-            'bias': bias,
-            'mape': mape
+        final_evaluation = pd.concat(evaluation_results)
+        final_evaluation['id_prj_prc'] = final_evaluation['flag_adj'].map({
+            'Y' : id_prj_prc_y,
+            'N' : id_prj_prc_n
         })
+        final_evaluation = final_evaluation.drop(columns=['flag_adj'])
+        final_evaluation = final_evaluation.melt(
+            id_vars=['id_prj_prc', 'level1', 'level2'],
+            value_vars=['rmse', 'r2', 'bias', 'mape'],
+            var_name='err_method',
+            value_name='err_value'
+        )
 
-    # Combine all forecasts
-    final_forecasts = pd.concat(forecasts, ignore_index=True)
-    error_metrics = pandas.DataFrame(errors)
-    print(final_forecasts)
-    print(error_metrics)
-    #return final_forecasts, error_metrics
+        final_evaluation['id_model'] = 4
+        final_evaluation['partition_cust_id'] = id_cust
+        final_evaluation = final_evaluation.drop_duplicates()
+        final_evaluation.reset_index(drop=True, inplace=True)
+        err_method_mapping = {
+            'bias' : '1',
+            'mape' : '2',
+            'r2' : '3',
+            'rmse' : '4',
+        }
+        final_evaluation['id_err_method'] = final_evaluation['err_method'].replace(err_method_mapping)
+        final_evaluation = final_evaluation[['id_prj_prc', 'id_err_method', 'id_model', 'level1', 'level2', 'err_value', 'partition_cust_id']]
+        final_evaluation = final_evaluation.dropna()
+        final_evaluation['err_value'] = final_evaluation['err_value'].astype(float).round(3)
+        final_evaluation['err_value'] = final_evaluation['err_value'].apply(lambda x: round(x, 3))
+        err = cd.from_pandas(final_evaluation)
+        
+        print(err.head())
+        print(err.shape)
+
+    except Exception as e:
+        print('ERROR EXCEPTION FORECASTING MODEL: ', e)
+
+    return pred, err
+
+def get_time_freq_by_type(time_type):
+    time_type = str(time_type)
+
+    if time_type == 'Daily':
+       time_freq = 'D'
+    elif time_type == 'Weekly':
+       time_freq = 'W'
+    elif time_type == 'Monthly':
+       time_freq = 'M'
+    elif time_type == 'Yearly':
+       time_freq = 'Y'
+    else:
+       return 'Error Forecsat Time Setting'
+
+    return time_freq
+
+class TimeSeriesDataset(Dataset):
+    def __init__(self, X, Y):
+        self.X = torch.tensor(X, dtype=torch.float32)
+        self.Y = torch.tensor(Y, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.Y[idx]
+    
+class AdvancedLSTM(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.3, bidirectional=True):
+        super(AdvancedLSTM, self).__init__()
+
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.bidirectional = bidirectional
+        num_directions = 2 if bidirectional else 1
+
+        # LSTM Layer (Bidirectional + Multiple Layers)
+        self.lstm = nn.LSTM(
+            input_size,
+            hidden_size,
+            num_layers,
+            batch_first=True,
+            dropout=dropout,
+            bidirectional=bidirectional
+        )
+
+        # Batch Normalization Layer
+        self.batch_norm = nn.BatchNorm1d(hidden_size * num_directions)
+
+        # Fully Connected Layers with Activation & Dropout
+        self.fc1 = nn.Linear(hidden_size * num_directions, hidden_size)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        lstm_out, (hn, cn) = self.lstm(x)  # LSTM output & hidden states
+
+        # Get last hidden state (concatenate if bidirectional)
+        if self.bidirectional:
+            last_hidden = torch.cat((hn[-2], hn[-1]), dim=1)  # Merge both directions
+        else:
+            last_hidden = hn[-1]
+
+        # Apply Batch Normalization
+        norm_hidden = self.batch_norm(last_hidden)
+
+        # Fully Connected Layers with Activation & Dropout
+        out = self.fc1(norm_hidden)
+        out = self.relu(out)
+        out = self.dropout(out)
+        out = self.fc2(out)
+
+        return out

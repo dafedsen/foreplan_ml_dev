@@ -32,12 +32,10 @@ from datetime import timedelta
 
 # @delayed
 def run_model(dbase, dbset):
-    logger.info("Linear Regression forecast running.")
+    logger.info("Prophet forecast running.")
     id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
     id_prj = dbase['id_prj'][0]
     id_version = extract_number(dbase['version_name'][0])
-
-    update_process_status(id_prj, id_version, 'RUNNING')
 
     t_forecast = get_forecast_time(dbase, dbset)    
 
@@ -45,15 +43,17 @@ def run_model(dbase, dbset):
     pred, err = run_prophet_forecast(dbase, t_forecast, dbset)
     end_time = time.time()
 
-    logger.info("Sending Linear Regression forecast result.")
+    logger.info("Sending Prophet forecast result.")
     send_process_result(pred, id_cust)
 
-    logger.info("Sending Linear Regression forecast evaluation.")
+    logger.info("Sending Prophet forecast evaluation.")
     send_process_evaluation(err, id_cust)
 
     print(str(timedelta(seconds=end_time - start_time)))
+    status = check_update_process_status_success(id_prj, id_version)
 
-    update_process_status(id_prj, id_version, 'SUCCESS')
+    if status:
+        update_end_date(id_prj, id_version)
 
     return str(timedelta(seconds=end_time - start_time))
 
@@ -234,7 +234,17 @@ def run_prophet_forecast(dbase, t_forecast, dbset):
 
         # Looping level 2
         for level2 in level2_list:
+            if pd.isna(level2):
+                update_model_finished(project, id_version, 1/total_loop)
+                update_process_status_progress(project, id_version)
+                continue
+
             df = dbase[(dbase['level1'] == level1) & (dbase['level2'] == level2)]
+            if df.empty:
+                print(f"Skipping {level1}-{level2}, no data found")
+                update_model_finished(project, id_version, 1/total_loop)
+                update_process_status_progress(project, id_version)
+                continue
             df.reset_index(inplace=True, drop=True)
 
             st = lr_settings[(lr_settings['level1'] == level1) & (lr_settings['level2'] == level2)]
@@ -254,9 +264,8 @@ def run_prophet_forecast(dbase, t_forecast, dbset):
             level1_forecast_n = cd.merge(level1_forecast_n, n_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
             level1_error_n = cd.concat([level1_error_n, n_err], ignore_index=True)
             
-            current_loop = current_loop + 1
-            progress = (current_loop / total_loop)
-            # update_running_model_process(project, id_version, progress)
+            update_model_finished(project, id_version, 1/total_loop)
+            update_process_status_progress(project, id_version)
 
         # Append Adjusted and Unadjusted
         forecast_result = cd.concat([forecast_result, level1_forecast])
@@ -285,6 +294,8 @@ def run_prophet_forecast(dbase, t_forecast, dbset):
     forecast_result = forecast_result[['date', 'id_prj_prc', 'level1', 'level2', 'hist_value', 'id_model']]
     forecast_result.rename(columns={'date': 'fcast_date', 'hist_value': 'fcast_value'}, inplace=True)
     forecast_result['partition_cust_id'] = id_cust
+    forecast_result = forecast_result.dropna()
+    forecast_result['fcast_value'] = forecast_result['fcast_value'].astype(float).round(3)
 
     error_result = error_result.melt(
         id_vars=['level1', 'adj_include','id_prj_prc', 'level2', 'id_prj', 'id_version'],
@@ -305,8 +316,12 @@ def run_prophet_forecast(dbase, t_forecast, dbset):
     }
     error_result['id_err_method'] = error_result['err_method'].replace(err_method_mapping)
     error_result = error_result[['id_prj_prc', 'id_err_method', 'id_model', 'level1', 'level2', 'err_value', 'partition_cust_id']]
+    error_result = error_result.dropna()
+    error_result['err_value'] = error_result['err_value'].astype(float).round(3)
+    # error_result['err_value'] = error_result['err_value'].map(lambda x: f"{x:.3f}")
+    # error_result['err_value'] = error_result['err_value'].apply(lambda x: round(x, 3))
 
-    print(forecast_result)
-    print(error_result)
+    print(forecast_result.head(3))
+    print(error_result.head(3))
 
     return forecast_result, error_result

@@ -25,8 +25,6 @@ def run_model(dbase, dbset):
     id_prj = dbase['id_prj'][0]
     id_version = extract_number(dbase['version_name'][0])
 
-    update_process_status(id_prj, id_version, 'RUNNING')
-
     t_forecast = get_forecast_time(dbase, dbset)    
 
     start_time = time.time()
@@ -39,8 +37,11 @@ def run_model(dbase, dbset):
     logger.info("Sending Auto ARIMA forecast evaluation.")
     send_process_evaluation(err, id_cust)
 
-    # update_process_status(id_prj, id_version, 'SUCCESS')
     print(str(timedelta(seconds=end_time - start_time)))
+    status = check_update_process_status_success(id_prj, id_version)
+
+    if status:
+        update_end_date(id_prj, id_version)
 
     return str(timedelta(seconds=end_time - start_time))
 
@@ -92,16 +93,15 @@ def predict_model(df, st, t_forecast):
 
         # Model Predict
         y_pred = t_forecast.copy()
-        print('RUNNING')
         y_pred['ds'] = y_pred['date']
         y_pred.set_index('date', inplace=True)
         y_pred.sort_index(inplace=True)
-
+        
         n_periods = len(y_pred)+1+len(test)
         prediction = model.forecast(n_periods)
         prediction = cd.DataFrame(prediction, columns=[level2])
         prediction.reset_index(inplace=True)
-
+        
         # Prediction Data Process
         pred['date'] = t_forecast['date']
         pred[level2] = prediction.iloc[-len(t_forecast):][level2].values
@@ -125,7 +125,8 @@ def predict_model(df, st, t_forecast):
     
     try:
         # Evaluating
-        y_pred_test = pd.DataFrame(model.forecast(len(test)), index=test.index, columns=['y'])
+        
+        y_pred_test = cd.DataFrame(model.forecast(len(test)), index=test.index, columns=['y'])
 
         rmse = get_rmse(test['hist_value'], y_pred_test['y'])
         r2 = r2_score(test['hist_value'], y_pred_test['y'])
@@ -223,7 +224,17 @@ def run_auto_arima(dbase, t_forecast, dbset):
 
         # Looping level 2
         for level2 in level2_list:
+            if pd.isna(level2):
+                update_model_finished(project, id_version, 1/total_loop)
+                update_process_status_progress(project, id_version)
+                continue
+
             df = dbase[(dbase['level1'] == level1) & (dbase['level2'] == level2)]
+            if df.empty:
+                print(f"Skipping {level1}-{level2}, no data found")
+                update_model_finished(project, id_version, 1/total_loop)
+                update_process_status_progress(project, id_version)
+                continue
             df.reset_index(inplace=True, drop=True)
 
             st = lr_settings[
@@ -238,23 +249,23 @@ def run_auto_arima(dbase, t_forecast, dbset):
 
             # Run Adjusted Data
             y_pred, y_err = predict_model(df, st_y_adj, t_forecast)
-            level1_forecast = pd.merge(level1_forecast, y_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
-            level1_error = pd.concat([level1_error, y_err], ignore_index=True)
+            level1_forecast = cd.merge(level1_forecast, y_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
+            level1_error = cd.concat([level1_error, y_err], ignore_index=True)
 
             # Run Unadjusted Data
             n_pred, n_err = predict_model(df, st_n_adj, t_forecast)
-            level1_forecast_n = pd.merge(level1_forecast_n, n_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
-            level1_error_n = pd.concat([level1_error_n, n_err], ignore_index=True)
+            level1_forecast_n = cd.merge(level1_forecast_n, n_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
+            level1_error_n = cd.concat([level1_error_n, n_err], ignore_index=True)
 
-            current_loop = current_loop + 1
-            progress = (current_loop / total_loop)
+            update_model_finished(project, id_version, 1/total_loop)
+            update_process_status_progress(project, id_version)
 
         # Append Adjusted and Unadjusted
-        forecast_result = pd.concat([forecast_result, level1_forecast])
-        forecast_result = pd.concat([forecast_result, level1_forecast_n])
+        forecast_result = cd.concat([forecast_result, level1_forecast])
+        forecast_result = cd.concat([forecast_result, level1_forecast_n])
 
-        error_result = pd.concat([error_result, level1_error])
-        error_result = pd.concat([error_result, level1_error_n])
+        error_result = cd.concat([error_result, level1_error])
+        error_result = cd.concat([error_result, level1_error_n])
 
         forecast_result['id_prj'] = project
         forecast_result['id_version'] = id_version
@@ -263,22 +274,24 @@ def run_auto_arima(dbase, t_forecast, dbset):
         error_result['id_version'] = id_version
 
     forecast_result = forecast_result.melt(
-        id_vars=['date', 'id_prj', 'version_name', 'level1', 'adj_include', 'id_prj_prc'], 
+        id_vars=['date', 'id_prj', 'id_version', 'level1', 'adj_include', 'id_prj_prc'], 
         var_name='level2', 
         value_name='hist_value'
         )
     forecast_result['id_model'] = 1
 
-    forecast_result['date'] = pd.to_datetime(forecast_result['date'])
+    forecast_result['date'] = cd.to_datetime(forecast_result['date'])
     forecast_result = forecast_result.groupby(['level1', 'level2', 'adj_include', 'id_prj_prc']).apply(
         lambda group: group.sort_values('date').head(t_forecast.shape[0])
     ).reset_index(drop=True)
     forecast_result = forecast_result[['date', 'id_prj_prc', 'level1', 'level2', 'hist_value', 'id_model']]
     forecast_result.rename(columns={'date': 'fcast_date', 'hist_value': 'fcast_value'}, inplace=True)
     forecast_result['partition_cust_id'] = id_cust
+    forecast_result = forecast_result.dropna()
+    forecast_result['fcast_value'] = forecast_result['fcast_value'].astype(float).round(3)
 
     error_result = error_result.melt(
-        id_vars=['level1', 'adj_include', 'id_prj_prc', 'level2', 'id_prj', 'version_name'],
+        id_vars=['level1', 'adj_include', 'id_prj_prc', 'level2', 'id_prj', 'id_version'],
         value_vars=['rmse', 'r2', 'mape', 'bias'],
         var_name='err_method',
         value_name='err_value'
@@ -296,6 +309,10 @@ def run_auto_arima(dbase, t_forecast, dbset):
     }
     error_result['id_err_method'] = error_result['err_method'].replace(err_method_mapping)
     error_result = error_result[['id_prj_prc', 'id_err_method', 'id_model', 'level1', 'level2', 'err_value', 'partition_cust_id']]
+    error_result = error_result.dropna()
+    error_result['err_value'] = error_result['err_value'].astype(float).round(3)
+    # error_result['err_value'] = error_result['err_value'].map(lambda x: f"{x:.3f}")
+    # error_result['err_value'] = error_result['err_value'].apply(lambda x: round(x, 3))
 
     print(forecast_result)
     print(error_result)
