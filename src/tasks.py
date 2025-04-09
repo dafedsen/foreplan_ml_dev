@@ -12,8 +12,8 @@ if SRC_DIR not in sys.path:
 from fastapi import BackgroundTasks
 import logging
 
-from scripts import auto_arima_gpu, linear_regression_gpu, cnn_lstm_pytorch, exponential_smoothing_gpu
-from scripts import prophet_cpu
+from scripts import auto_arima_gpu, linear_regression_gpu, cnn_lstm_pytorch, exponential_smoothing_gpu, prophet_cpu
+from scripts import holt_winters_gpu
 from scripts.connection import *
 from scripts.functions import extract_number
 
@@ -67,6 +67,11 @@ def run_forecast_task(id_prj, version_name, background_tasks):
             background_tasks.add_task(run_forecast_exponential_smoothing_bg, dbase, dbset)
             logger.info(f"Exponential Smoothing forecast running for project {id_prj} with version {version_name}.")
 
+        # 6
+        if 'Holt-Winters' in models:
+            background_tasks.add_task(run_forecast_holt_winters_bg, dbase, dbset)
+            logger.info(f"Holt-Winters forecast running for project {id_prj} with version {version_name}.")
+
         return {"version_name": version_name, "id_prj": id_prj, "models": models}
 
     except Exception as e:
@@ -115,4 +120,13 @@ def run_forecast_exponential_smoothing_bg(dbase, dbset):
         exponential_smoothing_gpu.run_model(dbase, dbset)
     except Exception as e:
         logger.error(f"Error in run_forecast_exponential_smoothing: {str(e)}")
+        update_process_status(id_prj, id_version, 'ERROR')
+
+def run_forecast_holt_winters_bg(dbase, dbset):
+    id_version = extract_number(dbset['version_name'][0])
+    id_prj = dbset['id_prj'][0]
+    try:
+        holt_winters_gpu.run_model(dbase, dbset)
+    except Exception as e:
+        logger.error(f"Error in run_forecast_holt_winters: {str(e)}")
         update_process_status(id_prj, id_version, 'ERROR')

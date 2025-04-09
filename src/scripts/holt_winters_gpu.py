@@ -1,4 +1,3 @@
-# Simple Exponential Smoothing
 import sys
 import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -21,7 +20,7 @@ from scripts.connection import *
 from scripts.functions import *
 
 def run_model(dbase, dbset):
-    logger.info("Exponential Smoothing forecast running.")
+    logger.info("Holt-Winters forecast running.")
     id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
     id_prj = dbase['id_prj'][0]
     id_version = extract_number(dbase['version_name'][0])
@@ -29,13 +28,13 @@ def run_model(dbase, dbset):
     t_forecast = get_forecast_time(dbase, dbset)    
 
     start_time = time.time()
-    pred, err = run_exponential_smoothing(dbase, t_forecast, dbset)
+    pred, err = run_holt_winters(dbase, t_forecast, dbset)
     end_time = time.time()
 
-    logger.info("Sending Exponential Smoothing forecast result.")
+    logger.info("Sending Holt-Winters forecast result.")
     send_process_result(pred, id_cust)
 
-    logger.info("Sending Exponential Smoothing forecast evaluation.")
+    logger.info("Sending Holt-Winters forecast evaluation.")
     send_process_evaluation(err, id_cust)
 
     print(str(timedelta(seconds=end_time - start_time)))
@@ -83,8 +82,8 @@ def predict_model(df, st, t_forecast):
         train_size = int(0.9 * len(df_train))
         train, test = df_train[:train_size], df_train[train_size:]
 
-        # Initiate Model and Train 
-        model = ExponentialSmoothing(train['hist_value'], seasonal="additive", seasonal_periods=1)
+        # Initiate Model and Train
+        model = ExponentialSmoothing(train['hist_value'], seasonal="additive", seasonal_periods=12)
         model.fit()
         
         # Model Predict
@@ -169,7 +168,7 @@ def predict_model(df, st, t_forecast):
 
     return pred, err
 
-def run_exponential_smoothing(dbase, t_forecast, dbset):
+def run_holt_winters(dbase, t_forecast, dbset):
 
     project = dbase['id_prj'][0]
     id_version = extract_number(dbset['version_name'][0])
@@ -184,7 +183,7 @@ def run_exponential_smoothing(dbase, t_forecast, dbset):
     total_loop = len(level1_list) * len(level2_list)
     current_loop = 0
 
-    lr_settings = dbset[dbset['model_name'] == 'Exponential Smoothing']
+    lr_settings = dbset[dbset['model_name'] == 'Holt-Winters']
     lr_settings = lr_settings[['adj_include', 'id_prj_prc', 'level1', 'level2', 'model_name', 'out_std_dev', 'ad_smooth_method']]
 
     id_prj_prc_y = lr_settings[lr_settings['adj_include'] == 'Yes']['id_prj_prc'].iloc[0]
@@ -269,7 +268,7 @@ def run_exponential_smoothing(dbase, t_forecast, dbset):
         var_name='level2', 
         value_name='hist_value'
         )
-    forecast_result['id_model'] = 5
+    forecast_result['id_model'] = 6
 
     forecast_result['date'] = cd.to_datetime(forecast_result['date'])
     forecast_result = forecast_result.groupby(['level1', 'level2', 'adj_include', 'id_prj_prc']).apply(
@@ -287,7 +286,7 @@ def run_exponential_smoothing(dbase, t_forecast, dbset):
         var_name='err_method',
         value_name='err_value'
     )
-    error_result['id_model'] = 5
+    error_result['id_model'] = 6
     error_result['partition_cust_id'] = id_cust
     error_result = error_result.drop_duplicates()
     error_result.reset_index(drop=True, inplace=True)
