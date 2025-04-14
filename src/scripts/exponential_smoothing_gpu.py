@@ -21,30 +21,35 @@ from scripts.connection import *
 from scripts.functions import *
 
 def run_model(dbase, dbset):
-    logger.info("Exponential Smoothing forecast running.")
-    id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
-    id_prj = dbase['id_prj'][0]
-    id_version = extract_number(dbase['version_name'][0])
+    try:
+        logger.info("Exponential Smoothing forecast running.")
+        id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
+        id_prj = dbase['id_prj'][0]
+        id_version = extract_number(dbase['version_name'][0])
 
-    t_forecast = get_forecast_time(dbase, dbset)    
+        t_forecast = get_forecast_time(dbase, dbset)    
 
-    start_time = time.time()
-    pred, err = run_exponential_smoothing(dbase, t_forecast, dbset)
-    end_time = time.time()
+        start_time = time.time()
+        pred, err = run_exponential_smoothing(dbase, t_forecast, dbset)
+        end_time = time.time()
 
-    logger.info("Sending Exponential Smoothing forecast result.")
-    send_process_result(pred, id_cust)
+        logger.info("Sending Exponential Smoothing forecast result.")
+        send_process_result(pred, id_cust)
 
-    logger.info("Sending Exponential Smoothing forecast evaluation.")
-    send_process_evaluation(err, id_cust)
+        logger.info("Sending Exponential Smoothing forecast evaluation.")
+        send_process_evaluation(err, id_cust)
 
-    print(str(timedelta(seconds=end_time - start_time)))
-    status = check_update_process_status_success(id_prj, id_version)
+        print(str(timedelta(seconds=end_time - start_time)))
+        status = check_update_process_status_success(id_prj, id_version)
 
-    if status:
-        update_end_date(id_prj, id_version)
+        if status:
+            update_end_date(id_prj, id_version)
 
-    return str(timedelta(seconds=end_time - start_time))
+        return str(timedelta(seconds=end_time - start_time))
+    
+    except Exception as e:
+        logger.error(f"Error in exponential_smoothing_gpu.run_model : {str(e)}")
+        update_process_status(id_prj, id_version, 'ERROR')
 
 def predict_model(df, st, t_forecast):
 
@@ -84,7 +89,7 @@ def predict_model(df, st, t_forecast):
         train, test = df_train[:train_size], df_train[train_size:]
 
         # Initiate Model and Train 
-        model = ExponentialSmoothing(train['hist_value'], seasonal="additive", seasonal_periods=1)
+        model = ExponentialSmoothing(train['hist_value'], seasonal="additive", seasonal_periods=2)
         model.fit()
         
         # Model Predict

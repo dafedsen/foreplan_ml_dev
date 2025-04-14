@@ -27,34 +27,39 @@ from scripts.connection import *
 from scripts.functions import *
 
 def run_model(dbase, dbset):
-    logger.info("CNN LSTM forecast running.")
-    id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
-    id_prj = dbase['id_prj'][0]
-    id_version = extract_number(dbase['version_name'][0])
+    try:
+        logger.info("CNN LSTM forecast running.")
+        id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
+        id_prj = dbase['id_prj'][0]
+        id_version = extract_number(dbase['version_name'][0])
 
+        
+        t_forecast = get_forecast_time(dbase, dbset)    
+
+        start_time = time.time()
+        pred, err = run_cnn_lstm(dbase, t_forecast, dbset)
+        end_time = time.time()
+
+        update_model_finished(id_prj, id_version, 1)
+        update_process_status_progress(id_prj, id_version)
+
+        logger.info("Sending CNN LSTM forecast result.")
+        send_process_result(pred, id_cust)
+
+        logger.info("Sending CNN LSTM forecast evaluation.")
+        send_process_evaluation(err, id_cust)
+
+        print(str(timedelta(seconds=end_time - start_time)))
+        status = check_update_process_status_success(id_prj, id_version)
+
+        if status:
+            update_end_date(id_prj, id_version)
+
+        return str(timedelta(seconds=end_time - start_time))
     
-    t_forecast = get_forecast_time(dbase, dbset)    
-
-    start_time = time.time()
-    pred, err = run_cnn_lstm(dbase, t_forecast, dbset)
-    end_time = time.time()
-
-    update_model_finished(id_prj, id_version, 1)
-    update_process_status_progress(id_prj, id_version)
-
-    logger.info("Sending CNN LSTM forecast result.")
-    send_process_result(pred, id_cust)
-
-    logger.info("Sending CNN LSTM forecast evaluation.")
-    send_process_evaluation(err, id_cust)
-
-    print(str(timedelta(seconds=end_time - start_time)))
-    status = check_update_process_status_success(id_prj, id_version)
-
-    if status:
-        update_end_date(id_prj, id_version)
-
-    return str(timedelta(seconds=end_time - start_time))
+    except Exception as e:
+        logger.error(f"Error in cnn_lstm_pytorch.run_model : {str(e)}")
+        update_process_status(id_prj, id_version, 'ERROR')
 
 def create_sequences(data, n_lookback, n_forecast):
     X, Y = [], []

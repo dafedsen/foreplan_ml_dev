@@ -20,30 +20,35 @@ from cuml.metrics import r2_score
 from cuml.model_selection import train_test_split
 
 def run_model(dbase, dbset):
-    logger.info("Auto ARIMA forecast running.")
-    id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
-    id_prj = dbase['id_prj'][0]
-    id_version = extract_number(dbase['version_name'][0])
+    try:
+        logger.info("Auto ARIMA forecast running.")
+        id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
+        id_prj = dbase['id_prj'][0]
+        id_version = extract_number(dbase['version_name'][0])
 
-    t_forecast = get_forecast_time(dbase, dbset)    
+        t_forecast = get_forecast_time(dbase, dbset)    
 
-    start_time = time.time()
-    pred, err = run_auto_arima(dbase, t_forecast, dbset)
-    end_time = time.time()
+        start_time = time.time()
+        pred, err = run_auto_arima(dbase, t_forecast, dbset)
+        end_time = time.time()
 
-    logger.info("Sending Auto ARIMA forecast result.")
-    send_process_result(pred, id_cust)
+        logger.info("Sending Auto ARIMA forecast result.")
+        send_process_result(pred, id_cust)
 
-    logger.info("Sending Auto ARIMA forecast evaluation.")
-    send_process_evaluation(err, id_cust)
+        logger.info("Sending Auto ARIMA forecast evaluation.")
+        send_process_evaluation(err, id_cust)
 
-    print(str(timedelta(seconds=end_time - start_time)))
-    status = check_update_process_status_success(id_prj, id_version)
+        print(str(timedelta(seconds=end_time - start_time)))
+        status = check_update_process_status_success(id_prj, id_version)
 
-    if status:
-        update_end_date(id_prj, id_version)
+        if status:
+            update_end_date(id_prj, id_version)
 
-    return str(timedelta(seconds=end_time - start_time))
+        return str(timedelta(seconds=end_time - start_time))
+    
+    except Exception as e:
+        logger.error(f"Error in auto_arima_gpu.run_model : {str(e)}")
+        update_process_status(id_prj, id_version, 'ERROR')
 
 def predict_model(df, st, t_forecast):
 

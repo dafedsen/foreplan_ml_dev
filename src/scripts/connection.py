@@ -8,11 +8,15 @@ from psycopg2.extras import execute_values
 import math
 import datetime
 
-DB_HOST = "10.250.98.90"
-DB_PORT = 5443
-DB_USER = "edsen_foreplan_admin"
-DB_PASS = "Foreplan%402025"
-DB_NAME = "edsen_foreplan_db"
+from dotenv import load_dotenv
+import os
+load_dotenv()
+
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
+DB_USER = os.getenv("DB_USER")
+DB_PASS = os.getenv("DB_PASS")
+DB_NAME = os.getenv("DB_NAME")
 
 engine = create_engine(
     f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require",
