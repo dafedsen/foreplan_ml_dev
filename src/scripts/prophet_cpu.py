@@ -326,7 +326,4 @@ def run_prophet_forecast(dbase, t_forecast, dbset):
     # error_result['err_value'] = error_result['err_value'].map(lambda x: f"{x:.3f}")
     # error_result['err_value'] = error_result['err_value'].apply(lambda x: round(x, 3))
 
-    print(forecast_result.head(3))
-    print(error_result.head(3))
-
     return forecast_result, error_result

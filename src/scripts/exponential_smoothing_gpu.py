@@ -106,7 +106,7 @@ def predict_model(df, st, t_forecast):
         pred['adj_include'] = ADJUSTMENT
         pred['id_prj_prc'] = PROCESS
         pred = pred[['adj_include', 'id_prj_prc', 'date', 'level1', level2]]
-        print(pred)
+
     except Exception as e:
         print('ERROR EXCEPTION', e)
         pred['date'] = t_forecast['date']
@@ -125,8 +125,6 @@ def predict_model(df, st, t_forecast):
         # y_pred_test = model.forecast(X_test)
         y_pred_test = forecast[:test.shape[0]].values
         y_test = test['hist_value'].values
-        print(type(y_test))
-        print(y_test)
 
         rmse = get_rmse(y_test, y_pred_test)
         r2 = r2_score(y_test, y_pred_test)
@@ -152,7 +150,7 @@ def predict_model(df, st, t_forecast):
         err['id_prj_prc'] = PROCESS
     
     except Exception as e:
-        print('ERROR EXCEPTION', e)
+        print('\nERROR EXCEPTION', e)
         rmse = 999999999
         r2 = 999999999
         bias = 999999999
@@ -309,8 +307,5 @@ def run_exponential_smoothing(dbase, t_forecast, dbset):
     error_result['err_value'] = error_result['err_value'].astype(float).round(3)
     # error_result['err_value'] = error_result['err_value'].map(lambda x: f"{x:.3f}")
     # error_result['err_value'] = error_result['err_value'].apply(lambda x: round(x, 3))
-
-    print(forecast_result)
-    print(error_result)
 
     return forecast_result, error_result

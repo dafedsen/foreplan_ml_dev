@@ -303,7 +303,4 @@ def run_linear_regression(dbase, t_forecast, dbset):
     # error_result['err_value'] = error_result['err_value'].map(lambda x: f"{x:.3f}")
     # error_result['err_value'] = error_result['err_value'].apply(lambda x: round(x, 3))
 
-    print(forecast_result)
-    print(error_result)
-
     return forecast_result, error_result

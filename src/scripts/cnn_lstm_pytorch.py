@@ -150,9 +150,9 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
     hidden_size = 128
     num_layers = 2
     output_size = n_forecast
-    dropout = 0.3
+    dropout = 0.1
     learning_rate = 0.001
-    num_epochs = 10
+    num_epochs = 20
     try:
         model = AdvancedLSTM(input_size, hidden_size, num_layers, output_size, dropout, bidirectional=True)
         criterion = nn.MSELoss()
@@ -166,7 +166,7 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
                 loss = criterion(Y_pred, Y_batch)
                 loss.backward()
                 optimizer.step()
-            print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
+            # print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
     except Exception as e:
         print('ERROR EXCEPTION TRAINING MODEL: ', e)
 
@@ -301,9 +301,6 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
         final_evaluation['err_value'] = final_evaluation['err_value'].astype(float).round(3)
         final_evaluation['err_value'] = final_evaluation['err_value'].apply(lambda x: round(x, 3))
         err = cd.from_pandas(final_evaluation)
-        
-        print(err.head())
-        print(err.shape)
 
     except Exception as e:
         print('ERROR EXCEPTION FORECASTING MODEL: ', e)
@@ -337,6 +334,54 @@ class TimeSeriesDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.Y[idx]
     
+# class AdvancedLSTM(nn.Module):
+#     def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.3, bidirectional=True):
+#         super(AdvancedLSTM, self).__init__()
+
+#         self.hidden_size = hidden_size
+#         self.num_layers = num_layers
+#         self.bidirectional = bidirectional
+#         num_directions = 2 if bidirectional else 1
+
+#         # LSTM Layer (Bidirectional + Multiple Layers)
+#         self.lstm = nn.LSTM(
+#             input_size,
+#             hidden_size,
+#             num_layers,
+#             batch_first=True,
+#             dropout=dropout,
+#             bidirectional=bidirectional
+#         )
+
+#         # Batch Normalization Layer
+#         self.batch_norm = nn.BatchNorm1d(hidden_size * num_directions)
+
+#         # Fully Connected Layers with Activation & Dropout
+#         self.fc1 = nn.Linear(hidden_size * num_directions, hidden_size)
+#         self.relu = nn.ReLU()
+#         self.dropout = nn.Dropout(dropout)
+#         self.fc2 = nn.Linear(hidden_size, output_size)
+
+#     def forward(self, x):
+#         lstm_out, (hn, cn) = self.lstm(x)  # LSTM output & hidden states
+
+#         # Get last hidden state (concatenate if bidirectional)
+#         if self.bidirectional:
+#             last_hidden = torch.cat((hn[-2], hn[-1]), dim=1)  # Merge both directions
+#         else:
+#             last_hidden = hn[-1]
+
+#         # Apply Batch Normalization
+#         norm_hidden = self.batch_norm(last_hidden)
+
+#         # Fully Connected Layers with Activation & Dropout
+#         out = self.fc1(norm_hidden)
+#         out = self.relu(out)
+#         out = self.dropout(out)
+#         out = self.fc2(out)
+
+#         return out
+
 class AdvancedLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.3, bidirectional=True):
         super(AdvancedLSTM, self).__init__()
@@ -360,27 +405,34 @@ class AdvancedLSTM(nn.Module):
         self.batch_norm = nn.BatchNorm1d(hidden_size * num_directions)
 
         # Fully Connected Layers with Activation & Dropout
-        self.fc1 = nn.Linear(hidden_size * num_directions, hidden_size)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(hidden_size, output_size)
+        self.fc1 = nn.Linear(hidden_size * num_directions, hidden_size * 2)
+        self.relu1 = nn.ReLU()
+        self.dropout1 = nn.Dropout(dropout)
+
+        self.fc2 = nn.Linear(hidden_size * 2, hidden_size)
+        self.relu2 = nn.ReLU()
+        self.dropout2 = nn.Dropout(dropout)
+
+        self.fc3 = nn.Linear(hidden_size, output_size)
 
     def forward(self, x):
-        lstm_out, (hn, cn) = self.lstm(x)  # LSTM output & hidden states
+        lstm_out, (hn, cn) = self.lstm(x)
 
-        # Get last hidden state (concatenate if bidirectional)
         if self.bidirectional:
-            last_hidden = torch.cat((hn[-2], hn[-1]), dim=1)  # Merge both directions
+            last_hidden = torch.cat((hn[-2], hn[-1]), dim=1)
         else:
             last_hidden = hn[-1]
 
-        # Apply Batch Normalization
         norm_hidden = self.batch_norm(last_hidden)
 
-        # Fully Connected Layers with Activation & Dropout
         out = self.fc1(norm_hidden)
-        out = self.relu(out)
-        out = self.dropout(out)
+        out = self.relu1(out)
+        out = self.dropout1(out)
+
         out = self.fc2(out)
+        out = self.relu2(out)
+        out = self.dropout2(out)
+
+        out = self.fc3(out)
 
         return out
