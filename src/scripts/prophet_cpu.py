@@ -102,10 +102,13 @@ def predict_model(df, st, t_forecast):
         df_test = df_test.to_pandas()
         
         # Initiate Model and Train
-        model = Prophet(yearly_seasonality=True,
-                        weekly_seasonality=True,
-                        daily_seasonality=True,
-                        growth='linear')
+        model = Prophet(
+            yearly_seasonality=True,
+            weekly_seasonality=True,
+            daily_seasonality=False,
+            growth='linear',
+            changepoint_prior_scale=0.05
+        )
         
         model.fit(df_train)
         

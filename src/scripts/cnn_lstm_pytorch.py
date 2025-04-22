@@ -55,6 +55,8 @@ def run_model(dbase, dbset):
         if status:
             update_end_date(id_prj, id_version)
 
+        logger.info("CNN LSTM Finished.")
+
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
@@ -148,11 +150,11 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
 
     input_size = X_train.shape[2]
     hidden_size = 128
-    num_layers = 2
+    num_layers = 1
     output_size = n_forecast
     dropout = 0.1
     learning_rate = 0.001
-    num_epochs = 20
+    num_epochs = 50
     try:
         model = AdvancedLSTM(input_size, hidden_size, num_layers, output_size, dropout, bidirectional=True)
         criterion = nn.MSELoss()
@@ -166,7 +168,7 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
                 loss = criterion(Y_pred, Y_batch)
                 loss.backward()
                 optimizer.step()
-            # print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
+            print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
     except Exception as e:
         print('ERROR EXCEPTION TRAINING MODEL: ', e)
 
@@ -410,7 +412,7 @@ class AdvancedLSTM(nn.Module):
         self.dropout1 = nn.Dropout(dropout)
 
         self.fc2 = nn.Linear(hidden_size * 2, hidden_size)
-        self.relu2 = nn.ReLU()
+        self.relu2 = nn.LeakyReLU()
         self.dropout2 = nn.Dropout(dropout)
 
         self.fc3 = nn.Linear(hidden_size, output_size)

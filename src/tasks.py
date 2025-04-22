@@ -13,7 +13,7 @@ from fastapi import BackgroundTasks
 import logging
 
 from scripts import auto_arima_gpu, linear_regression_gpu, cnn_lstm_pytorch, exponential_smoothing_gpu, prophet_cpu
-from scripts import holt_winters_gpu, gradient_boosting_gpu, knn_gpu
+from scripts import holt_winters_gpu, gradient_boosting_gpu, knn_gpu, cnn_lstm_pytorch_single
 from scripts.connection import *
 from scripts.functions import extract_number
 
@@ -118,7 +118,7 @@ def run_forecast_cnn_lstm_bg(dbase, dbset):
     id_version = extract_number(dbset['version_name'][0])
     id_prj = dbset['id_prj'][0]
     try:
-        cnn_lstm_pytorch.run_model(dbase, dbset)
+        cnn_lstm_pytorch_single.run_model(dbase, dbset)
     except Exception as e:
         logger.error(f"Error in run_forecast_cnn_lstm: {str(e)}")
         update_process_status(id_prj, id_version, 'ERROR')
