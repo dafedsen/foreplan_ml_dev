@@ -15,13 +15,18 @@ logger = logging.getLogger(__name__)
 
 from scripts.connection import *
 from scripts.functions import *
+from scripts.logger_ml import logging_ml
 
-def run_model(dbase, dbset):
+def run_model(id_user, dbase, dbset):
     try:
         logger.info("K-Nearest Neighbors forecast running.")
-        id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
-        id_prj = dbase['id_prj'][0]
-        id_version = extract_number(dbase['version_name'][0])
+        id_prj = int(dbase['id_prj'].iloc[0].item())
+        version_name = dbase['version_name'].iloc[0]
+
+        id_cust = get_id_cust_from_id_prj(id_prj)
+        id_version = extract_number(version_name)
+
+        logging_ml(id_user, id_prj, id_version, id_cust, "KNN", "RUNNING", "Model is running", "knn_gpu.py : run_model")
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
@@ -40,11 +45,14 @@ def run_model(dbase, dbset):
 
         if status:
             update_end_date(id_prj, id_version)
+        
+        logging_ml(id_user, id_prj, id_version, id_cust, "KNN", "FINISHED", "Finished running model", "knn_gpu.py : run_model")
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
         logger.error(f"Error in knn_gpu.run_model : {str(e)}")
+        logging_ml(id_user, id_prj, id_version, id_cust, "KNN", "ERROR", "Error in running model", "knn_gpu.py : run_model : " + str(e))
         update_process_status(id_prj, id_version, 'ERROR')
 
 def predict_model(df, st, t_forecast):
@@ -52,48 +60,49 @@ def predict_model(df, st, t_forecast):
     try:
         pred = cd.DataFrame()
 
-        level1 = df['level1'][0]
-        level2 = df['level2'][0]
+        level1 = df['level1'].iloc[0]
+        level2 = df['level2'].iloc[0]
+        logger.info(f"Predicting {level1} - {level2}")
 
-        PROCESS = st['id_prj_prc'][0]
+        PROCESS = int(st['id_prj_prc'].iloc[0].item())
+        
+        ADJUSTMENT = st['adj_include'].iloc[0]
 
-        ADJUSTMENT = st['adj_include'][0]
+        # SIGMA = st['out_std_dev'][0]
 
-        SIGMA = st['out_std_dev'][0]
+        # SMOOTHING = st['ad_smooth_method'][0]
 
-        SMOOTHING = st['ad_smooth_method'][0]
+        # if ADJUSTMENT == 'Yes':
+        #     adjusting_data(df, SMOOTHING, SIGMA)
 
-        if ADJUSTMENT == 'Yes':
-            adjusting_data(df, SMOOTHING, SIGMA)
-
-        cleansing_outliers(df, SIGMA)
+        # cleansing_outliers(df, SIGMA)
 
         scaler = MinMaxScaler()
-
+        logger.info(f"Scaling data for {level1} - {level2}")
         df = df.sort_values(by='hist_date')
         df['hist_value'] = df.hist_value.astype('float32')
         df["hist_value"] = scaler.fit_transform(df[["hist_value"]])
 
         lookback = 7
         X, y = [], []
-
+        logger.info(f"Preparing data for {level1} - {level2}")
         for i in range(lookback, len(df)):
             X.append(df.iloc[i - lookback:i]["hist_value"].to_numpy())
             y.append(df.iloc[i]["hist_value"].to_numpy())
 
         X = cp.array(X)
         y = cp.array(y)
-
+        logger.info(f"Splitting data for {level1} - {level2}")
         train_size = int(len(X) * 0.8)
         X_train, X_test = X[:train_size], X[train_size:]
         y_train, y_test = y[:train_size], y[train_size:]
-
+        logger.info(f"Finding params n for {level1} - {level2}")
         n_range = (1, 20)
         best_n = find_best_n_neighbors(X_train, X_test, y_train, y_test, n_range)
-
+        logger.info(f"Training model for {level1} - {level2}")
         model = KNeighborsRegressor(n_neighbors=best_n, metric="euclidean", algorithm="brute")
         model.fit(X_train, y_train)
-
+        logger.info(f"Predicting for {level1} - {level2}")
         forecast = []
         last_features = X_test[-1].copy()
 
@@ -103,7 +112,7 @@ def predict_model(df, st, t_forecast):
 
             last_features[:-1] = last_features[1:]
             last_features[-1] = next_value
-
+        logger.info(f"Unscaling data for {level1} - {level2}")
         y_pred = scaler.inverse_transform(cp.array(forecast).reshape(-1, 1))
         y_pred = cp.array(y_pred).flatten()
         print(y_pred)
@@ -114,9 +123,9 @@ def predict_model(df, st, t_forecast):
         pred['adj_include'] = ADJUSTMENT
         pred['id_prj_prc'] = PROCESS
         pred = pred[['adj_include', 'id_prj_prc', 'date', 'level1', level2]]
-
+        logger.info("\n%s", pred[["date", level2]])
     except Exception as e:
-        print('\nERROR EXCEPTION FORECASTING ', e)
+        print('\nERROR EXCEPTION FORECASTING knn : ', e)
         pred['date'] = t_forecast['date']
         pred[level2] = 0
         pred['level1'] = level1
@@ -139,10 +148,10 @@ def predict_model(df, st, t_forecast):
 
 
         if math.isinf(mape) == True:
-            mape = 999999999
+            mape = 999999999.0
 
         if math.isinf(r2) == True:
-            r2 = 999999999
+            r2 = 999999999.0
 
         # Evaluation Data Process
         err = cd.DataFrame({
@@ -157,7 +166,7 @@ def predict_model(df, st, t_forecast):
         err['id_prj_prc'] = PROCESS
 
     except Exception as e:
-        print('\nERROR EXCEPTION EVALUATING ', e)
+        print('\nERROR EXCEPTION EVALUATING knn : ', e)
         rmse = 999999999.0
         r2 = 999999999.0
         bias = 999999999.0
@@ -176,8 +185,8 @@ def predict_model(df, st, t_forecast):
 
 def run_knn(dbase, t_forecast, dbset):
 
-    project = dbase['id_prj'][0]
-    id_version = extract_number(dbset['version_name'][0])
+    project = int(dbase['id_prj'].iloc[0].item())
+    id_version = extract_number(dbset['version_name'].iloc[0])
     id_cust = get_id_cust_from_id_prj(project)
 
     level1_list = dbase['level1'].unique().to_arrow().to_pylist()
@@ -243,13 +252,16 @@ def run_knn(dbase, t_forecast, dbset):
             st_y_adj.reset_index(inplace=True, drop=True)
             st_n_adj.reset_index(inplace=True, drop=True)
 
+            df_y_adj = df[df['flag_adj'] == 1]
+            df_n_adj = df[df['flag_adj'] == 0]
+
             # Run Adjusted Data
-            y_pred, y_err = predict_model(df, st_y_adj, t_forecast)
+            y_pred, y_err = predict_model(df_y_adj, st_y_adj, t_forecast)
             level1_forecast = cd.merge(level1_forecast, y_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
             level1_error = cd.concat([level1_error, y_err], ignore_index=True)
 
             # Run Unadjusted Data
-            n_pred, n_err = predict_model(df, st_n_adj, t_forecast)
+            n_pred, n_err = predict_model(df_n_adj, st_n_adj, t_forecast)
             level1_forecast_n = cd.merge(level1_forecast_n, n_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
             level1_error_n = cd.concat([level1_error_n, n_err], ignore_index=True)
 

@@ -6,6 +6,7 @@ if BASE_DIR not in sys.path:
 
 from scripts.connection import *
 from scripts.functions import *
+from scripts.logger_ml import logging_ml
 
 import math
 import cudf as cd
@@ -19,17 +20,24 @@ from cuml.tsa.auto_arima import AutoARIMA as auto_arima
 from cuml.metrics import r2_score
 from cuml.model_selection import train_test_split
 
-def run_model(dbase, dbset):
+def run_model(id_user, dbase, dbset):
     try:
         logger.info("Auto ARIMA forecast running.")
-        id_cust = get_id_cust_from_id_prj(dbase['id_prj'][0])
-        id_prj = dbase['id_prj'][0]
-        id_version = extract_number(dbase['version_name'][0])
+
+        id_prj = int(dbase['id_prj'].iloc[0].item())
+        version_name = dbase['version_name'].iloc[0]
+
+        id_cust = get_id_cust_from_id_prj(id_prj)
+        id_version = extract_number(version_name)
+        
+        logging_ml(id_user, id_prj, id_version, id_cust, "Auto ARIMA", "RUNNING", "Model is running", "auto_arima_gpu.py : run_model")
 
         t_forecast = get_forecast_time(dbase, dbset)    
-
+        
         start_time = time.time()
+        logger.info('APAKAH BERHASIL')
         pred, err = run_auto_arima(dbase, t_forecast, dbset)
+        logger.info('BERHASIL')
         end_time = time.time()
 
         logger.info("Sending Auto ARIMA forecast result.")
@@ -44,10 +52,13 @@ def run_model(dbase, dbset):
         if status:
             update_end_date(id_prj, id_version)
 
+        logging_ml(id_user, id_prj, id_version, id_cust, "Auto ARIMA", "FINISHED", "Finished running model", "auto_arima_gpu.py : run_model")
+
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
         logger.error(f"Error in auto_arima_gpu.run_model : {str(e)}")
+        logging_ml(id_user, id_prj, id_version, id_cust, "Auto ARIMA", "ERROR", "Error in running model", "auto_arima_gpu.py : run_model : " + str(e))
         update_process_status(id_prj, id_version, 'ERROR')
 
 def predict_model(df, st, t_forecast):
@@ -56,22 +67,22 @@ def predict_model(df, st, t_forecast):
         pred = cd.DataFrame()
         
         # Preparing Parameter
-        level1 = df['level1'][0]
-        level2 = df['level2'][0]
+        level1 = df['level1'].iloc[0]
+        level2 = df['level2'].iloc[0]
 
-        PROCESS = st['id_prj_prc'][0]
+        PROCESS = int(st['id_prj_prc'].iloc[0].item())
         
-        ADJUSTMENT = st['adj_include'][0]
+        ADJUSTMENT = st['adj_include'].iloc[0]
 
-        SIGMA = st['out_std_dev'][0]
+        # SIGMA = st['out_std_dev'][0]
 
-        SMOOTHING = st['ad_smooth_method'][0]
+        # SMOOTHING = st['ad_smooth_method'][0]
 
         # Data Cleansing          
-        if ADJUSTMENT == 'Yes':
-            adjusting_data(df, SMOOTHING, SIGMA)
+        # if ADJUSTMENT == 'Yes':
+        #     adjusting_data(df, SMOOTHING, SIGMA)
 
-        cleansing_outliers(df, SIGMA)
+        # cleansing_outliers(df, SIGMA)
 
         # Data Preparation
         df = df.sort_values(by='hist_date')
@@ -113,7 +124,7 @@ def predict_model(df, st, t_forecast):
         pred = pred[['adj_include', 'id_prj_prc', 'date', 'level1', level2]]
 
     except Exception as e:
-        print('ERROR EXCEPTION in predict_model', e)
+        print('ERROR EXCEPTION in predicting auto arima : ', e)
         pred['date'] = t_forecast['date']
         pred[level2] = 0
         pred['level1'] = level1
@@ -136,10 +147,10 @@ def predict_model(df, st, t_forecast):
         mape = mean_absolute_percentage_error(test['hist_value'], y_pred_test['y'])
 
         if math.isinf(mape) == True:
-            mape = 999999999
+            mape = 999999999.0
 
         if math.isinf(r2) == True:
-            r2 = 999999999
+            r2 = 999999999.0
 
         # Evaluation Data Process
         err = cd.DataFrame({
@@ -154,7 +165,7 @@ def predict_model(df, st, t_forecast):
         err['id_prj_prc'] = PROCESS
 
     except Exception as e:
-        print('ERROR EXCEPTION in evaluate_model', e)
+        print('ERROR EXCEPTION in evaluate model auto arima : ', e)
         rmse = 999999999
         r2 = 999999999
         bias = 999999999
@@ -179,8 +190,8 @@ def predict_model(df, st, t_forecast):
 
 def run_auto_arima(dbase, t_forecast, dbset):
 
-    project = dbase['id_prj'][0]
-    id_version = extract_number(dbset['version_name'][0])
+    project = int(dbase['id_prj'].iloc[0].item())
+    id_version = extract_number(dbset['version_name'].iloc[0])
     id_cust = get_id_cust_from_id_prj(project)
 
     level1_list = dbase['level1'].unique().to_arrow().to_pylist()
@@ -249,13 +260,20 @@ def run_auto_arima(dbase, t_forecast, dbset):
             st_y_adj.reset_index(inplace=True, drop=True)
             st_n_adj.reset_index(inplace=True, drop=True)
 
+            df_y_adj = df[df['flag_adj'] == 1]
+            df_n_adj = df[df['flag_adj'] == 0]
+
+            logger.info(df.shape)
+            logger.info(df_y_adj.shape)
+            logger.info(df_n_adj.shape)
+
             # Run Adjusted Data
-            y_pred, y_err = predict_model(df, st_y_adj, t_forecast)
+            y_pred, y_err = predict_model(df_y_adj, st_y_adj, t_forecast)
             level1_forecast = cd.merge(level1_forecast, y_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
             level1_error = cd.concat([level1_error, y_err], ignore_index=True)
 
             # Run Unadjusted Data
-            n_pred, n_err = predict_model(df, st_n_adj, t_forecast)
+            n_pred, n_err = predict_model(df_n_adj, st_n_adj, t_forecast)
             level1_forecast_n = cd.merge(level1_forecast_n, n_pred, on=['date', 'level1', 'adj_include', 'id_prj_prc'], how='left')
             level1_error_n = cd.concat([level1_error_n, n_err], ignore_index=True)
 

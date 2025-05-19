@@ -27,15 +27,14 @@ DEVICE = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
 def run_model(id_user, dbase, dbset):
     try:
-        logger.info("CNN LSTM Single forecast running.")
-        logger.info("Prophet forecast running.")
+        logger.info("LSTNet Single forecast running.")
         id_prj = int(dbase['id_prj'].iloc[0].item())
         version_name = dbase['version_name'].iloc[0]
 
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "CNN LSTM", "RUNNING", "Model is running", "cnn_lstm_pytorch_single.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "RUNNING", "Model is running", "lstnet_pytorch_single.py : run_model")
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
@@ -43,10 +42,10 @@ def run_model(id_user, dbase, dbset):
         pred, err = run_cnn_lstm(dbase, t_forecast, dbset)
         end_time = time.time()
 
-        logger.info("Sending CNN LSTM Single forecast result.")
+        logger.info("Sending LSTNet Single forecast result.")
         send_process_result(pred, id_cust)
 
-        logger.info("Sending CNN LSTM Single forecast evaluation.")
+        logger.info("Sending LSTNet Single forecast evaluation.")
         send_process_evaluation(err, id_cust)
 
         print(str(timedelta(seconds=end_time - start_time)))
@@ -55,13 +54,13 @@ def run_model(id_user, dbase, dbset):
         if status:
             update_end_date(id_prj, id_version)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "CNN LSTM", "FINISHED", "Finished running model", "cnn_lstm_pytorch_single.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "FINISHED", "Finished running model", "lstnet_pytorch_single.py : run_model")
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
         logger.error(f"Error in cnn_lstm_pytorch_single.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "CNN LSTM", "ERROR", "Error in running model", "cnn_lstm_pytorch_single.py : run_model : " + str(e))
+        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "ERROR", "Error in running model", "lstnet_pytorch_single.py : run_model : " + str(e))
         update_process_status(id_prj, id_version, 'ERROR')
 
 def predict_model(df, st, t_forecast):
@@ -89,7 +88,7 @@ def predict_model(df, st, t_forecast):
 
         # Data Preparation
         df = df.sort_values(by='hist_date')
-        logger.info("Scaling data for CNN LSTM")
+        logger.info("Scaling data for LSTNet")
         scaler = MinMaxScaler()
         df['hist_value'] = scaler.fit_transform(df[['hist_value']])
         df_t = df.copy()
@@ -117,7 +116,7 @@ def predict_model(df, st, t_forecast):
         # Initiate Model and Train
         input_size = X_train.shape[2]
         hidden_size = 128
-        num_layers = 1
+        num_layers = 6
         output_size = n_forecast
         dropout = 0.1
         learning_rate = 0.001
@@ -125,7 +124,15 @@ def predict_model(df, st, t_forecast):
 
         try:
             logger.info(f"Init Training model for {level1} - {level2}")
-            model = AdvancedLSTM(input_size, hidden_size, num_layers, output_size, dropout, bidirectional=True)
+            model = LSTNet(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                cnn_kernel_size=num_layers,
+                skip_size=2,
+                output_size=output_size,
+                dropout=dropout,
+                highway_window=5
+            )
             criterion = nn.MSELoss()
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
             logger.info(f"Training model for {level1} - {level2}")
@@ -152,7 +159,7 @@ def predict_model(df, st, t_forecast):
                     optimizer.step()
                 print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
         except Exception as e:
-            print('ERROR EXCEPTION TRAINING MODEL: ', e)
+            print('ERROR EXCEPTION TRAINING MODEL LSTNet: ', e)
 
         # Model Predict
         try:
@@ -185,7 +192,7 @@ def predict_model(df, st, t_forecast):
             pred = pred[['adj_include', 'id_prj_prc', 'date', 'level1', level2]]
             logger.info("\n%s", pred[["date", level2]])
         except Exception as e:
-            print('ERROR EXCEPTION PREDICTING MODEL: ', e)
+            print('ERROR EXCEPTION PREDICTING MODEL LSTNet: ', e)
             pred['date'] = t_forecast['date']
             pred[level2] = 0
             pred['level1'] = level1
@@ -194,7 +201,7 @@ def predict_model(df, st, t_forecast):
             pred = pred[['adj_include', 'id_prj_prc', 'date', 'level1', level2]]
 
     except Exception as e:
-        print('ERROR EXCEPTION in predict_model cnn lstm single : ', e)
+        print('ERROR EXCEPTION in predict_model LSTNet single : ', e)
         pred['date'] = t_forecast['date']
         pred[level2] = 0
         pred['level1'] = level1
@@ -262,7 +269,7 @@ def predict_model(df, st, t_forecast):
         err['id_prj_prc'] = PROCESS
 
     except Exception as e:
-        print('ERROR EXCEPTION in evaluate_model cnn lstm single : ', e)
+        print('ERROR EXCEPTION in evaluate_model LSTNet single : ', e)
         rmse = 999999999
         r2 = 999999999
         bias = 999999999
@@ -300,7 +307,7 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
     total_loop = len(level1_list) * len(level2_list)
     current_loop = 0
 
-    lr_settings = dbset[dbset['model_name'] == 'CNN LSTM']
+    lr_settings = dbset[dbset['model_name'] == 'LSTNet']
     lr_settings = lr_settings[['adj_include', 'id_prj_prc', 'level1', 'level2', 'model_name', 'out_std_dev', 'ad_smooth_method']]
 
     id_prj_prc_y = lr_settings[lr_settings['adj_include'] == 'Yes']['id_prj_prc'].iloc[0]
@@ -391,7 +398,7 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
         var_name='level2', 
         value_name='hist_value'
         )
-    forecast_result['id_model'] = 4
+    forecast_result['id_model'] = 10
 
     forecast_result['date'] = cd.to_datetime(forecast_result['date'])
     forecast_result = forecast_result.groupby(['level1', 'level2', 'adj_include', 'id_prj_prc']).apply(
@@ -409,7 +416,7 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
         var_name='err_method',
         value_name='err_value'
     )
-    error_result['id_model'] = 4
+    error_result['id_model'] = 10
     error_result['partition_cust_id'] = id_cust
     error_result = error_result.drop_duplicates()
     error_result.reset_index(drop=True, inplace=True)
@@ -452,57 +459,63 @@ class TimeSeriesDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.Y[idx]
     
-class AdvancedLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.3, bidirectional=True):
-        super(AdvancedLSTM, self).__init__()
+class LSTNet(nn.Module):
+    def __init__(self, input_size, hidden_size, cnn_kernel_size, skip_size, output_size, dropout=0.2, highway_window=0):
+        super(LSTNet, self).__init__()
+        self.P = 30  # Time window (lookback)
+        self.m = input_size  # Number of input features (variables)
+        self.hidR = hidden_size
+        self.hidC = hidden_size
+        self.Ck = cnn_kernel_size
+        self.skip = skip_size
+        self.output_size = output_size
+        self.highway_window = highway_window
 
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.bidirectional = bidirectional
-        num_directions = 2 if bidirectional else 1
+        # CNN component
+        self.conv1 = nn.Conv2d(1, self.hidC, kernel_size=(self.Ck, self.m))
 
-        # LSTM Layer (Bidirectional + Multiple Layers)
-        self.lstm = nn.LSTM(
-            input_size,
-            hidden_size,
-            num_layers,
-            batch_first=True,
-            dropout=dropout,
-            bidirectional=bidirectional
-        )
+        # RNN component
+        self.gru = nn.GRU(self.hidC, self.hidR)
 
-        # Batch Normalization Layer
-        self.batch_norm = nn.BatchNorm1d(hidden_size * num_directions)
+        # Skip-RNN component
+        if self.skip > 0:
+            self.pt = int((self.P - self.Ck) / self.skip)
+            self.skip_gru = nn.GRU(self.hidC, self.hidR)
+            self.linear1 = nn.Linear(self.hidR + self.skip * self.hidR, self.output_size)
+        else:
+            self.linear1 = nn.Linear(self.hidR, self.output_size)
 
-        # Fully Connected Layers with Activation & Dropout
-        self.fc1 = nn.Linear(hidden_size * num_directions, hidden_size * 2)
-        self.relu1 = nn.ReLU()
-        self.dropout1 = nn.Dropout(dropout)
+        # Highway component
+        if self.highway_window > 0:
+            self.highway = nn.Linear(self.highway_window * self.m, self.output_size)
 
-        self.fc2 = nn.Linear(hidden_size * 2, hidden_size)
-        self.relu2 = nn.LeakyReLU()
-        self.dropout2 = nn.Dropout(dropout)
-
-        self.fc3 = nn.Linear(hidden_size, output_size)
+        self.dropout = nn.Dropout(p=dropout)
 
     def forward(self, x):
-        lstm_out, (hn, cn) = self.lstm(x)
+        batch_size = x.size(0)
+        x = x.unsqueeze(1)  # (B, 1, P, m)
+        c = torch.relu(self.conv1(x))  # (B, hidC, P-Ck+1, 1)
+        c = self.dropout(c)
+        c = c.squeeze(3)  # (B, hidC, P-Ck+1)
+        c = c.permute(2, 0, 1)  # (P-Ck+1, B, hidC)
 
-        if self.bidirectional:
-            last_hidden = torch.cat((hn[-2], hn[-1]), dim=1)
-        else:
-            last_hidden = hn[-1]
+        # GRU
+        r, _ = self.gru(c)  # (P-Ck+1, B, hidR)
+        r = r[-1, :, :]  # (B, hidR)
 
-        norm_hidden = self.batch_norm(last_hidden)
+        if self.skip > 0:
+            s = c.view((int((c.size(0) - 1) / self.skip), self.skip, c.size(1), c.size(2)))
+            s = s.permute(1, 2, 0, 3).contiguous().view(self.skip, s.size(2), -1)
+            s, _ = self.skip_gru(s)
+            s = s[-1, :, :]
+            r = torch.cat((r, s), 1)
 
-        out = self.fc1(norm_hidden)
-        out = self.relu1(out)
-        out = self.dropout1(out)
+        res = self.linear1(r)
 
-        out = self.fc2(out)
-        out = self.relu2(out)
-        out = self.dropout2(out)
+        if self.highway_window > 0:
+            z = x.squeeze(1)  # (B, P, m)
+            z = z[:, -self.highway_window:, :].contiguous().view(batch_size, -1)
+            highway = self.highway(z)
+            res += highway
 
-        out = self.fc3(out)
-
-        return out
+        return res

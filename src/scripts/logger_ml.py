@@ -53,4 +53,4 @@ def logging_ml(id_user, id_prj, id_version, id_cust, model_name, status, descrip
 
     engine.dispose()
 
-logging_ml(2, 101, 1, 1, "Linear Regression", "RUNNING", "API ACCEPTED", "main.py : process_forecast")
+# logging_ml(2, 101, 1, 1, "Linear Regression", "RUNNING", "API ACCEPTED", "main.py : process_forecast")

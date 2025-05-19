@@ -56,6 +56,62 @@ def get_dataset_postgre(id_prj, version_name):
 
     return df_db
 
+def get_dataset(id_prj, version_name):
+    query = text("SELECT * FROM v_ml_final_hist_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+    params = {
+        "id_prj": int(id_prj),
+        "version_name": str(version_name)
+    }
+    df_adj = pd.read_sql(query, engine, params=params)
+    df_adj['hist_date'] = pd.to_datetime(df_adj['hist_date'], format='%Y-%m-%d')
+    df_adj['flag_adj'] = 1
+
+    query = text("SELECT * FROM v_ml_final_hist_non_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+    params = {
+        "id_prj": int(id_prj),
+        "version_name": str(version_name)
+    }
+    df_non_adj = pd.read_sql(query, engine, params=params)
+    df_non_adj['hist_date'] = pd.to_datetime(df_non_adj['hist_date'], format='%Y-%m-%d')
+    df_non_adj['flag_adj'] = 0
+
+    df = pd.concat([df_adj, df_non_adj])
+    df_db = cd.DataFrame.from_pandas(df)
+    df_db['hist_value'] = df_db['hist_value'].astype(float)
+    df_db.sort_values('hist_date')
+
+    return df_db
+
+def get_dataset_adj_postgre(id_prj, version_name):
+    query = text("SELECT * FROM v_ml_final_hist_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+    params = {
+        "id_prj": int(id_prj),
+        "version_name": str(version_name)
+    }
+    df = pd.read_sql(query, engine, params=params)
+    df['hist_date'] = pd.to_datetime(df['hist_date'], format='%Y-%m-%d')
+
+    df_db = cd.DataFrame.from_pandas(df)
+    df_db['hist_value'] = df_db['hist_value'].astype(float)
+    df_db.sort_values('hist_date')
+
+    return df_db
+
+def get_dataset_non_adj_postgre(id_prj, version_name):
+    query = text("SELECT * FROM v_ml_final_hist_non_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+    params = {
+        "id_prj": int(id_prj),
+        "version_name": str(version_name)
+    }
+    df = pd.read_sql(query, engine, params=params)
+    df['hist_date'] = pd.to_datetime(df['hist_date'], format='%Y-%m-%d')
+
+    df_db = cd.DataFrame.from_pandas(df)
+    df_db['hist_value'] = df_db['hist_value'].astype(float)
+    df_db.sort_values('hist_date')
+
+    return df_db
+
 def get_setting_postgre(id_prj, version_name):
 
     query = text("SELECT * FROM v_prj_prc WHERE id_prj = :id_prj AND version_name = :version_name")
