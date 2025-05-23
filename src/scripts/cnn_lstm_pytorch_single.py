@@ -95,7 +95,7 @@ def predict_model(df, st, t_forecast):
         df_t = df.copy()
         df_t = df_t[['hist_date', 'hist_value']]
         
-        n_lookback = 30
+        n_lookback = 5
         n_forecast = t_forecast.shape[0]
         logger.info(f"Creating sequences for {level1} - {level2}")
         X, Y = create_sequences(df_t.drop(columns=['hist_date']).to_cupy(), n_lookback, n_forecast)

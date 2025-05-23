@@ -14,7 +14,7 @@ import logging
 import cudf as cd
 
 from scripts import auto_arima_gpu, linear_regression_gpu, cnn_lstm_pytorch, exponential_smoothing_gpu, prophet_cpu
-from scripts import holt_winters_gpu, gradient_boosting_gpu, knn_gpu, cnn_lstm_pytorch_single, svm_gpu
+from scripts import holt_winters_gpu, gradient_boosting_gpu, knn_gpu, cnn_lstm_pytorch_single, svm_gpu, lstnet_pytorch_single
 from scripts.connection import *
 from scripts.functions import extract_number
 
@@ -76,10 +76,10 @@ def run_forecast_task(id_user, id_prj, version_name, background_tasks):
         #     background_tasks.add_task(run_forecast_linear_regression_bg, id_user, dbase, dbset)
         #     logger.info(f"Linear Regression forecast running for project {id_prj} with version {version_name}.")
 
-        # 4
-        if 'CNN LSTM' in models:
-            background_tasks.add_task(run_forecast_cnn_lstm_bg, id_user, dbase, dbset)
-            logger.info(f"CNN LSTM forecast running for project {id_prj} with version {version_name}.")
+        # # 4
+        # if 'CNN LSTM' in models:
+        #     background_tasks.add_task(run_forecast_cnn_lstm_bg, id_user, dbase, dbset)
+        #     logger.info(f"CNN LSTM forecast running for project {id_prj} with version {version_name}.")
 
         # # 5
         # if 'Exponential Smoothing' in models:
@@ -106,7 +106,10 @@ def run_forecast_task(id_user, id_prj, version_name, background_tasks):
         #     background_tasks.add_task(run_forecast_svm_bg, id_user, dbase, dbset)
         #     logger.info(f"SVM forecast running for project {id_prj} with version {version_name}.")
 
-        # LSTNet
+        # 10
+        if 'LSTNet' in models:
+            background_tasks.add_task(run_forecast_lstnet_bg, id_user, dbase, dbset)
+            logger.info(f"LSTNet forecast running for project {id_prj} with version {version_name}.")
 
         return {"version_name": version_name, "id_prj": id_prj, "models": models}
 
@@ -223,3 +226,15 @@ def run_forecast_svm_bg(id_user, dbase, dbset):
         logger.error(f"Error in run_forecast_svr: {str(e)}")
         update_process_status(id_prj, id_version, 'ERROR')
         logging_ml(id_user, id_prj, id_version, id_cust, "SVM", "ERROR", "MODEL IS FAILED", "tasks.py : run_forecast_svr_bg : " + str(e))
+
+def run_forecast_lstnet_bg(id_user, dbase, dbset):
+    try:
+        id_version = extract_number(dbset['version_name'][0])
+        id_prj = dbset['id_prj'][0]
+        id_cust = get_id_cust_from_id_prj(id_prj)
+        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "RUNNING", "MODEL IS RUNNING", "tasks.py : run_forecast_svr_bg")
+        lstnet_pytorch_single.run_model(id_user, dbase, dbset)
+    except Exception as e:
+        logger.error(f"Error in run_forecast_svr: {str(e)}")
+        update_process_status(id_prj, id_version, 'ERROR')
+        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "ERROR", "MODEL IS FAILED", "tasks.py : run_forecast_svr_bg : " + str(e))

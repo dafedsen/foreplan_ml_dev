@@ -88,35 +88,41 @@ def predict_model(df, st, t_forecast):
 
         # Data Preparation
         df = df.sort_values(by='hist_date')
-        logger.info("Scaling data for LSTNet")
+        # logger.info("Scaling data for LSTNet")
         scaler = MinMaxScaler()
         df['hist_value'] = scaler.fit_transform(df[['hist_value']])
         df_t = df.copy()
         df_t = df_t[['hist_date', 'hist_value']]
         
-        n_lookback = 30
+        n_lookback = 5
         n_forecast = t_forecast.shape[0]
-        logger.info(f"Creating sequences for {level1} - {level2}")
+        # logger.info(f"Creating sequences for {level1} - {level2}")
         X, Y = create_sequences(df_t.drop(columns=['hist_date']).to_cupy(), n_lookback, n_forecast)
+        # if X.shape[0] == 0 or Y.shape[0] == 0:
+        #     logger.warning(f"[{level1} - {level2}] No sequences could be created. Skipping.")
+        #     return cd.DataFrame(), cd.DataFrame()
+
         X = cp.asnumpy(X)
         Y = cp.asnumpy(Y)
 
         # Data Splitting
-        logger.info(f"Splitting data for {level1} - {level2}")
+        # logger.info(f"Splitting data for {level1} - {level2}")
         split_idx = int(len(X) * 0.8)
         X_train, X_test = X[:split_idx], X[split_idx:]
         Y_train, Y_test = Y[:split_idx], Y[split_idx:]
-        logger.info(f"X_train shape: {X_train.shape}")
+
+        # logger.info(f"X_train shape: {X_train.shape}")
         train_dataset = TimeSeriesDataset(X_train, Y_train)
         test_dataset = TimeSeriesDataset(X_test, Y_test)
-        logger.info(f"train_dataset length: {len(train_dataset)}")
+
+        # logger.info(f"train_dataset length: {len(train_dataset)}")
         train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
         # Initiate Model and Train
         input_size = X_train.shape[2]
         hidden_size = 128
-        num_layers = 6
+        cnn_kernel_size = min(n_lookback, 3)
         output_size = n_forecast
         dropout = 0.1
         learning_rate = 0.001
@@ -127,15 +133,15 @@ def predict_model(df, st, t_forecast):
             model = LSTNet(
                 input_size=input_size,
                 hidden_size=hidden_size,
-                cnn_kernel_size=num_layers,
-                skip_size=2,
+                cnn_kernel_size=cnn_kernel_size,
+                skip_size=0,
                 output_size=output_size,
                 dropout=dropout,
                 highway_window=5
             )
             criterion = nn.MSELoss()
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-            logger.info(f"Training model for {level1} - {level2}")
+
             model.to(DEVICE)
             model.train()
             for epoch in range(num_epochs):
@@ -163,13 +169,13 @@ def predict_model(df, st, t_forecast):
 
         # Model Predict
         try:
-            logger.info(f"Predicting model for {level1} - {level2}")
+            # logger.info(f"Predicting model for {level1} - {level2}")
             model.to(DEVICE)
             model.eval()
             last_data = df_t[['hist_value']].values[-n_lookback:]
             forecast_input = torch.tensor(last_data, dtype=torch.float32).to(DEVICE).unsqueeze(0)
-
             forecast_result = []
+
             for _ in range(t_forecast.shape[0]):
                 y_pred = model(forecast_input).cpu().detach().numpy().flatten()
                 if np.isnan(y_pred).any():
@@ -182,7 +188,7 @@ def predict_model(df, st, t_forecast):
 
             forecast_result = scaler.inverse_transform(np.array(forecast_result).reshape(-1, 1)).flatten()
             
-            logger.info(f"t_forecast length: {len(t_forecast)}, forecast_result length: {len(forecast_result)}")
+            # logger.info(f"t_forecast length: {len(t_forecast)}, forecast_result length: {len(forecast_result)}")
             # Prediction Data Process
             pred['date'] = t_forecast['date']
             pred[level2] = forecast_result
@@ -288,6 +294,9 @@ def predict_model(df, st, t_forecast):
 
     except Exception as e:
         print(f"An unexpected error occurred in evaluate_model: {e}")
+
+    logger.info("\n%s", pred[["date", level2]])
+    logger.info("\n%s", err)
 
     return pred, err
 
@@ -442,6 +451,14 @@ def create_sequences(data, n_lookback, n_forecast):
         X.append(data[i:i + n_lookback, :])
         Y.append(data[i + n_lookback:i + n_lookback + n_forecast, 0])
     return cp.array(X), cp.array(Y)
+
+def validate_dataframe(df, required_columns):
+    for col in required_columns:
+        if col not in df.columns:
+            raise ValueError(f"Missing column: {col}")
+        if df[col].isnull().any():
+            raise ValueError(f"Column '{col}' must not contain nulls.")
+    return df
 
 class TimeSeriesDataset(Dataset):
     def __init__(self, X, Y):
