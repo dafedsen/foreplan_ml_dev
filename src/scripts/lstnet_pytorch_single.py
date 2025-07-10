@@ -64,18 +64,17 @@ def run_model(id_user, dbase, dbset):
         update_process_status(id_prj, id_version, 'ERROR')
 
 def predict_model(df, st, t_forecast):
-
     try:
         pred = cd.DataFrame()
         
         # Preparing Parameter
         level1 = df['level1'].iloc[0]
         level2 = df['level2'].iloc[0]
-        logger.info(f"Predicting {level1} - {level2}")
         PROCESS = int(st['id_prj_prc'].iloc[0].item())
         
         ADJUSTMENT = st['adj_include'].iloc[0]
 
+        logger.info(f"Predicting {level1} - {level2} - {PROCESS} - {ADJUSTMENT}")
         # SIGMA = st['out_std_dev'][0]
 
         # SMOOTHING = st['ad_smooth_method'][0]
@@ -91,13 +90,26 @@ def predict_model(df, st, t_forecast):
         # logger.info("Scaling data for LSTNet")
         scaler = MinMaxScaler()
         df['hist_value'] = scaler.fit_transform(df[['hist_value']])
-        df_t = df.copy()
-        df_t = df_t[['hist_date', 'hist_value']]
+
+        df_t = df[['hist_date', 'hist_value']].dropna()
         
-        n_lookback = 5
         n_forecast = t_forecast.shape[0]
+        n_lookback = 5
+
+        total_n_loopback_required = n_lookback + n_forecast
+
+        if len(df) < total_n_loopback_required:
+            n_lookback = max(1, len(df) - n_forecast)
+            logger.warning(f"[{level1} - {level2} - {PROCESS} - {ADJUSTMENT}] Adjusted n_lookback to {n_lookback} due to limited data")
+
+        data_array = df_t.drop(columns=['hist_date']).to_cupy()
+
+        if data_array.ndim == 1:
+            data_array = data_array.reshape(-1, 1)
+
         # logger.info(f"Creating sequences for {level1} - {level2}")
-        X, Y = create_sequences(df_t.drop(columns=['hist_date']).to_cupy(), n_lookback, n_forecast)
+        # X, Y = create_sequences(df_t.drop(columns=['hist_date']).to_cupy(), n_lookback, n_forecast)
+        X, Y = create_sequences(data_array, n_lookback, n_forecast)
         # if X.shape[0] == 0 or Y.shape[0] == 0:
         #     logger.warning(f"[{level1} - {level2}] No sequences could be created. Skipping.")
         #     return cd.DataFrame(), cd.DataFrame()
@@ -111,11 +123,11 @@ def predict_model(df, st, t_forecast):
         X_train, X_test = X[:split_idx], X[split_idx:]
         Y_train, Y_test = Y[:split_idx], Y[split_idx:]
 
-        # logger.info(f"X_train shape: {X_train.shape}")
+        logger.info(f"X_train shape: {X_train.shape}")
         train_dataset = TimeSeriesDataset(X_train, Y_train)
         test_dataset = TimeSeriesDataset(X_test, Y_test)
 
-        # logger.info(f"train_dataset length: {len(train_dataset)}")
+        logger.info(f"train_dataset length: {len(train_dataset)}")
         train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
 
@@ -129,7 +141,7 @@ def predict_model(df, st, t_forecast):
         num_epochs = 50
 
         try:
-            logger.info(f"Init Training model for {level1} - {level2}")
+            logger.info(f"Init Training model for {level1} - {level2} - {PROCESS} - {ADJUSTMENT}")
             model = LSTNet(
                 input_size=input_size,
                 hidden_size=hidden_size,
@@ -163,13 +175,13 @@ def predict_model(df, st, t_forecast):
 
                     loss.backward()
                     optimizer.step()
-                print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
+                logger.info(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
         except Exception as e:
-            print('ERROR EXCEPTION TRAINING MODEL LSTNet: ', e)
+            logger.error(f'ERROR EXCEPTION TRAINING MODEL LSTNet: {e}')
 
         # Model Predict
         try:
-            # logger.info(f"Predicting model for {level1} - {level2}")
+            logger.info(f"Predicting model for {level1} - {level2} - {PROCESS} - {ADJUSTMENT}")
             model.to(DEVICE)
             model.eval()
             last_data = df_t[['hist_value']].values[-n_lookback:]
@@ -198,7 +210,7 @@ def predict_model(df, st, t_forecast):
             pred = pred[['adj_include', 'id_prj_prc', 'date', 'level1', level2]]
             logger.info("\n%s", pred[["date", level2]])
         except Exception as e:
-            print('ERROR EXCEPTION PREDICTING MODEL LSTNet: ', e)
+            logger.error(f'ERROR EXCEPTION PREDICTING MODEL LSTNet: {e}')
             pred['date'] = t_forecast['date']
             pred[level2] = 0
             pred['level1'] = level1
@@ -207,7 +219,7 @@ def predict_model(df, st, t_forecast):
             pred = pred[['adj_include', 'id_prj_prc', 'date', 'level1', level2]]
 
     except Exception as e:
-        print('ERROR EXCEPTION in predict_model LSTNet single : ', e)
+        logger.error(f'ERROR EXCEPTION in predict_model LSTNet single {level1} - {level2} - {PROCESS} - {ADJUSTMENT}: {e}')
         pred['date'] = t_forecast['date']
         pred[level2] = 0
         pred['level1'] = level1
@@ -275,7 +287,7 @@ def predict_model(df, st, t_forecast):
         err['id_prj_prc'] = PROCESS
 
     except Exception as e:
-        print('ERROR EXCEPTION in evaluate_model LSTNet single : ', e)
+        logger.error(f'ERROR EXCEPTION in evaluate_model LSTNet single : {e}')
         rmse = 999999999
         r2 = 999999999
         bias = 999999999

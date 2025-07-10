@@ -2,7 +2,7 @@ from dotenv import load_dotenv
 import os
 load_dotenv()
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.sql import text
 
@@ -13,6 +13,7 @@ DB_PORT = os.getenv("DB_PORT")
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS")
 DB_NAME = os.getenv("DB_NAME")
+SCHEMA = os.getenv("DB_SCHEMA")
 
 engine = create_engine(
     f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require",
@@ -23,11 +24,18 @@ engine = create_engine(
     pool_recycle=1800
 )
 
+@event.listens_for(engine, "connect")
+def set_search_path(dbapi_connection, connection_record):
+    schema = os.getenv("DB_SCHEMA", "public")
+    cursor = dbapi_connection.cursor()
+    cursor.execute(f'SET search_path TO {schema}')
+    cursor.close()
+
 def logging_ml(id_user, id_prj, id_version, id_cust, model_name, status, description, details):  
     date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    query = text("""
-        INSERT INTO bplan_logging_ml (
+    query = text(f"""
+        INSERT INTO {SCHEMA}.bplan_logging_ml (
             id_user, id_prj, id_version, id_cust,
             model_name, status, description, details, datetime
         ) VALUES (

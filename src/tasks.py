@@ -61,50 +61,50 @@ def run_forecast_task(id_user, id_prj, version_name, background_tasks):
     try:
         logger.info(f"Running forecast for project {id_prj} with version {version_name}.")
 
-        # # 1
-        # if 'Auto ARIMA' in models:
-        #     background_tasks.add_task(run_forecast_auto_arima_bg, id_user, dbase, dbset)
-        #     logger.info(f"Auto ARIMA forecast running for project {id_prj} with version {version_name}.")
+        # 1
+        if 'Auto ARIMA' in models:
+            background_tasks.add_task(run_forecast_auto_arima_bg, id_user, dbase, dbset)
+            logger.info(f"Auto ARIMA forecast running for project {id_prj} with version {version_name}.")
         
-        # # 2
-        # if 'Prophet Forecast' in models:
-        #     background_tasks.add_task(run_forecast_prophet_bg, id_user, dbase, dbset)
-        #     logger.info(f"Prophet forecast running for project {id_prj} with version {version_name}.")
+        # 2
+        if 'Prophet Forecast' in models:
+            background_tasks.add_task(run_forecast_prophet_bg, id_user, dbase, dbset)
+            logger.info(f"Prophet forecast running for project {id_prj} with version {version_name}.")
         
-        # # 3
-        # if 'Linear Regression' in models:
-        #     background_tasks.add_task(run_forecast_linear_regression_bg, id_user, dbase, dbset)
-        #     logger.info(f"Linear Regression forecast running for project {id_prj} with version {version_name}.")
+        # 3
+        if 'Linear Regression' in models:
+            background_tasks.add_task(run_forecast_linear_regression_bg, id_user, dbase, dbset)
+            logger.info(f"Linear Regression forecast running for project {id_prj} with version {version_name}.")
 
-        # # 4
-        # if 'CNN LSTM' in models:
-        #     background_tasks.add_task(run_forecast_cnn_lstm_bg, id_user, dbase, dbset)
-        #     logger.info(f"CNN LSTM forecast running for project {id_prj} with version {version_name}.")
+        # 4
+        if 'CNN LSTM' in models:
+            background_tasks.add_task(run_forecast_cnn_lstm_bg, id_user, dbase, dbset)
+            logger.info(f"CNN LSTM forecast running for project {id_prj} with version {version_name}.")
 
-        # # 5
-        # if 'Exponential Smoothing' in models:
-        #     background_tasks.add_task(run_forecast_exponential_smoothing_bg, id_user, dbase, dbset)
-        #     logger.info(f"Exponential Smoothing forecast running for project {id_prj} with version {version_name}.")
+        # 5
+        if 'Exponential Smoothing' in models:
+            background_tasks.add_task(run_forecast_exponential_smoothing_bg, id_user, dbase, dbset)
+            logger.info(f"Exponential Smoothing forecast running for project {id_prj} with version {version_name}.")
 
-        # # 6
-        # if 'Holt Winters' in models:
-        #     background_tasks.add_task(run_forecast_holt_winters_bg, id_user, dbase, dbset)
-        #     logger.info(f"Holt-Winters forecast running for project {id_prj} with version {version_name}.")
+        # 6
+        if 'Holt Winters' in models:
+            background_tasks.add_task(run_forecast_holt_winters_bg, id_user, dbase, dbset)
+            logger.info(f"Holt-Winters forecast running for project {id_prj} with version {version_name}.")
 
-        # # 7
-        # if 'Gradient Boosting' in models:
-        #     background_tasks.add_task(run_forecast_gradient_boosting_bg, id_user, dbase, dbset)
-        #     logger.info(f"Gradient Boosting forecast running for project {id_prj} with version {version_name}.")
+        # 7
+        if 'Gradient Boosting' in models:
+            background_tasks.add_task(run_forecast_gradient_boosting_bg, id_user, dbase, dbset)
+            logger.info(f"Gradient Boosting forecast running for project {id_prj} with version {version_name}.")
 
-        # # 8
-        # if 'KNN' in models:
-        #     background_tasks.add_task(run_forecast_knn_bg, id_user, dbase, dbset)
-        #     logger.info(f"KNN forecast running for project {id_prj} with version {version_name}.")
+        # 8
+        if 'KNN' in models:
+            background_tasks.add_task(run_forecast_knn_bg, id_user, dbase, dbset)
+            logger.info(f"KNN forecast running for project {id_prj} with version {version_name}.")
 
-        # # 9
-        # if 'SVM' in models:
-        #     background_tasks.add_task(run_forecast_svm_bg, id_user, dbase, dbset)
-        #     logger.info(f"SVM forecast running for project {id_prj} with version {version_name}.")
+        # 9
+        if 'SVM' in models:
+            background_tasks.add_task(run_forecast_svm_bg, id_user, dbase, dbset)
+            logger.info(f"SVM forecast running for project {id_prj} with version {version_name}.")
 
         # 10
         if 'LSTNet' in models:

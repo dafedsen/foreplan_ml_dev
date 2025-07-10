@@ -1,7 +1,7 @@
 import cudf as cd
 import pandas as pd
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.pool import QueuePool
 from sqlalchemy.sql import text
 from psycopg2.extras import execute_values
@@ -17,6 +17,7 @@ DB_PORT = os.getenv("DB_PORT")
 DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS")
 DB_NAME = os.getenv("DB_NAME")
+SCHEMA = os.getenv("DB_SCHEMA")
 
 engine = create_engine(
     f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require",
@@ -27,9 +28,16 @@ engine = create_engine(
     pool_recycle=1800
 )
 
+@event.listens_for(engine, "connect")
+def set_search_path(dbapi_connection, connection_record):
+    schema = os.getenv("DB_SCHEMA", "public")
+    cursor = dbapi_connection.cursor()
+    cursor.execute(f'SET search_path TO {schema}')
+    cursor.close()
+
 def get_models_postgre(id_prj):
 
-    query = text("SELECT distinct model_name FROM v_projhist WHERE id_prj = :id_prj")
+    query = text(f"SELECT distinct model_name FROM {SCHEMA}.v_projhist WHERE id_prj = :id_prj")
     params = {
         "id_prj": int(id_prj)
     }
@@ -41,7 +49,7 @@ def get_models_postgre(id_prj):
 
 def get_dataset_postgre(id_prj, version_name):
 
-    query = text("SELECT * FROM v_prm_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+    query = text(f"SELECT * FROM {SCHEMA}.v_prm_adj WHERE id_prj = :id_prj AND version_name = :version_name")
     params = {
         "id_prj": int(id_prj),
         "version_name": str(version_name)
@@ -57,7 +65,7 @@ def get_dataset_postgre(id_prj, version_name):
     return df_db
 
 def get_dataset(id_prj, version_name):
-    query = text("SELECT * FROM v_ml_final_hist_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+    query = text(f"SELECT * FROM {SCHEMA}.v_ml_final_hist_adj WHERE id_prj = :id_prj AND version_name = :version_name")
     params = {
         "id_prj": int(id_prj),
         "version_name": str(version_name)
@@ -66,7 +74,7 @@ def get_dataset(id_prj, version_name):
     df_adj['hist_date'] = pd.to_datetime(df_adj['hist_date'], format='%Y-%m-%d')
     df_adj['flag_adj'] = 1
 
-    query = text("SELECT * FROM v_ml_final_hist_non_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+    query = text(f"SELECT * FROM {SCHEMA}.v_ml_final_hist_non_adj WHERE id_prj = :id_prj AND version_name = :version_name")
     params = {
         "id_prj": int(id_prj),
         "version_name": str(version_name)
@@ -83,7 +91,7 @@ def get_dataset(id_prj, version_name):
     return df_db
 
 def get_dataset_adj_postgre(id_prj, version_name):
-    query = text("SELECT * FROM v_ml_final_hist_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+    query = text(f"SELECT * FROM {SCHEMA}.v_ml_final_hist_adj WHERE id_prj = :id_prj AND version_name = :version_name")
     params = {
         "id_prj": int(id_prj),
         "version_name": str(version_name)
@@ -98,7 +106,7 @@ def get_dataset_adj_postgre(id_prj, version_name):
     return df_db
 
 def get_dataset_non_adj_postgre(id_prj, version_name):
-    query = text("SELECT * FROM v_ml_final_hist_non_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+    query = text(f"SELECT * FROM {SCHEMA}.v_ml_final_hist_non_adj WHERE id_prj = :id_prj AND version_name = :version_name")
     params = {
         "id_prj": int(id_prj),
         "version_name": str(version_name)
@@ -114,7 +122,7 @@ def get_dataset_non_adj_postgre(id_prj, version_name):
 
 def get_setting_postgre(id_prj, version_name):
 
-    query = text("SELECT * FROM v_prj_prc WHERE id_prj = :id_prj AND version_name = :version_name")
+    query = text(f"SELECT * FROM {SCHEMA}.v_prj_prc WHERE id_prj = :id_prj AND version_name = :version_name")
     params = {
         "id_prj": int(id_prj),
         "version_name": str(version_name)
@@ -126,7 +134,7 @@ def get_setting_postgre(id_prj, version_name):
 
 def get_id_cust_from_id_prj(id_prj):
 
-    query = text("SELECT id_cust FROM v_prj_cust WHERE id_prj = :id_prj")
+    query = text(f"SELECT id_cust FROM {SCHEMA}.v_prj_cust WHERE id_prj = :id_prj")
     params = {
         "id_prj": int(id_prj)
     }
@@ -146,20 +154,26 @@ def send_process_result(df, id_cust):
         df = df.to_pandas()
 
     partition_name = f'fplan_prj_prc_result_custid_{id_cust}'  # Target partition
+    fallback_partition = 'fplan_prj_prc_result_custid_other'
     id_prj_prc_values = df['id_prj_prc'].unique().tolist()
     id_model_values = df['id_model'].unique().tolist()  # Get all project IDs
 
     try:
         # Step 1: DELETE existing records for the given id_prj_prc
-        delete_query = f"DELETE FROM fplan_prj_prc_result WHERE id_prj_prc IN %s AND id_model IN %s"
+        delete_query = f"DELETE FROM {SCHEMA}.fplan_prj_prc_result WHERE id_prj_prc IN %s AND id_model IN %s"
         cursor.execute(delete_query, (tuple(id_prj_prc_values), tuple(id_model_values)))
+
+        check_partition_query = "SELECT to_regclass(%s)"
+        cursor.execute(check_partition_query, (partition_name,))
+        result = cursor.fetchone()
+        target_partition = partition_name if result[0] else fallback_partition
 
         # Step 2: INSERT new records
         columns = [col for col in df.columns if col != 'id']  # Exclude 'id' if auto-increment
         insert_columns = ', '.join(columns)
         values_placeholder = ', '.join(['%s'] * len(columns))
         print(values_placeholder)
-        insert_query = f"INSERT INTO {partition_name} ({insert_columns}) VALUES {values_placeholder}"
+        insert_query = f"INSERT INTO {target_partition} ({insert_columns}) VALUES {values_placeholder}"
 
         # Convert DataFrame to list of tuples excluding 'id' if necessary
         records = [tuple(row[col] for col in columns) for _, row in df.iterrows()]
@@ -186,20 +200,26 @@ def send_process_evaluation(df, id_cust):
     df['err_value'] = df['err_value'].apply(lambda x: round(x, 3))
 
     partition_name = f'fplan_prj_prc_eval_custid_{id_cust}'  # Target partition
+    fallback_partition = 'fplan_prj_prc_eval_custid_other'
     id_prj_prc_values = df['id_prj_prc'].unique().tolist()  # Get all project IDs
     id_model_values = df['id_model'].unique().tolist()
 
     try:
         # Step 1: DELETE existing records for the given id_prj_prc
-        delete_query = f"DELETE FROM fplan_prj_prc_eval WHERE id_prj_prc IN %s AND id_model IN %s"
+        delete_query = f"DELETE FROM {SCHEMA}.fplan_prj_prc_eval WHERE id_prj_prc IN %s AND id_model IN %s"
         cursor.execute(delete_query, (tuple(id_prj_prc_values), tuple(id_model_values)))
+
+        check_partition_query = "SELECT to_regclass(%s)"
+        cursor.execute(check_partition_query, (partition_name,))
+        result = cursor.fetchone()
+        target_partition = partition_name if result[0] else fallback_partition
 
         # Step 2: INSERT new records
         columns = [col for col in df.columns if col != 'id']
         insert_columns = ', '.join(columns)
         values_placeholder = ', '.join(['%s'] * len(columns))  # Generate placeholders dynamically
         print(values_placeholder)
-        insert_query = f"INSERT INTO {partition_name} ({insert_columns}) VALUES {values_placeholder}"
+        insert_query = f"INSERT INTO {target_partition} ({insert_columns}) VALUES {values_placeholder}"
 
         # Convert DataFrame to list of tuples excluding 'id' if necessary
         records = [tuple(row[col] for col in columns) for _, row in df.iterrows()]
@@ -219,7 +239,7 @@ def send_process_evaluation(df, id_cust):
 
 def update_process_status(id_prj, id_version, status):
 
-    query = text("UPDATE fplan_prj_prc SET status = :status WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"UPDATE {SCHEMA}.fplan_prj_prc SET status = :status WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
@@ -234,7 +254,7 @@ def update_process_status(id_prj, id_version, status):
 
 def check_update_process_status_success(id_prj, id_version):
 
-    query = text("SELECT status_progress FROM fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"SELECT status_progress FROM {SCHEMA}.fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
@@ -253,7 +273,7 @@ def check_update_process_status_success(id_prj, id_version):
 
 def reset_process_status_progress(id_prj, id_version):
 
-    query = text("UPDATE fplan_prj_prc SET status_progress = :status_progress WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"UPDATE {SCHEMA}.fplan_prj_prc SET status_progress = :status_progress WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
@@ -267,7 +287,7 @@ def reset_process_status_progress(id_prj, id_version):
     engine.dispose()
 
 def update_process_status_progress(id_prj, id_version):
-    query = text("SELECT running_model FROM fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"SELECT running_model FROM {SCHEMA}.fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
@@ -278,7 +298,7 @@ def update_process_status_progress(id_prj, id_version):
         result = result.fetchone()
         running_models = result[0]
 
-    query = text("SELECT model_finished FROM fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"SELECT model_finished FROM {SCHEMA}.fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
@@ -292,7 +312,7 @@ def update_process_status_progress(id_prj, id_version):
     status_progress = math.ceil((model_finished / running_models) * 100)
     update_date = datetime.datetime.now()
 
-    query = text("UPDATE fplan_prj_prc SET status_progress = :status_progress , updated_date = :update_date WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"UPDATE {SCHEMA}.fplan_prj_prc SET status_progress = :status_progress , updated_date = :update_date WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
@@ -308,7 +328,7 @@ def update_process_status_progress(id_prj, id_version):
 
 def update_running_models(id_prj, id_version, total_models):
 
-    query = text("UPDATE fplan_prj_prc SET running_model = :running_model WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"UPDATE {SCHEMA}.fplan_prj_prc SET running_model = :running_model WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
@@ -323,7 +343,7 @@ def update_running_models(id_prj, id_version, total_models):
 
 def reset_model_finished(id_prj, id_version):
 
-    query = text("UPDATE fplan_prj_prc SET model_finished = :model_finished WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"UPDATE {SCHEMA}.fplan_prj_prc SET model_finished = :model_finished WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
@@ -337,7 +357,7 @@ def reset_model_finished(id_prj, id_version):
     engine.dispose()
 
 def update_model_finished(id_prj, id_version, current_process):
-    query = text("SELECT model_finished FROM fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"SELECT model_finished FROM {SCHEMA}.fplan_prj_prc WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
@@ -348,13 +368,13 @@ def update_model_finished(id_prj, id_version, current_process):
         result = result.fetchone()
         model_finished = result[0]
 
-    model_finsihed_update = model_finished + current_process
+    model_finished_update = model_finished + current_process
 
-    query = text("UPDATE fplan_prj_prc SET model_finished = :model_finished WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"UPDATE {SCHEMA}.fplan_prj_prc SET model_finished = :model_finished WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
-        "model_finished": float(model_finsihed_update)
+        "model_finished": float(model_finished_update)
     }
 
     with engine.connect() as conn:
@@ -365,7 +385,7 @@ def update_model_finished(id_prj, id_version, current_process):
 
 def update_end_date(id_prj, id_version):
     end_date = datetime.datetime.now()
-    query = text("UPDATE fplan_prj_prc SET end_date = :end_date WHERE id_prj = :id_prj AND id_version = :id_version")
+    query = text(f"UPDATE {SCHEMA}.fplan_prj_prc SET end_date = :end_date WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
         "id_version": int(id_version),
