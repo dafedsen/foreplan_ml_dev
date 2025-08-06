@@ -7,6 +7,8 @@ from sqlalchemy.sql import text
 from psycopg2.extras import execute_values
 import math
 import datetime
+import pytz
+import requests
 
 from dotenv import load_dotenv
 import os
@@ -18,6 +20,8 @@ DB_USER = os.getenv("DB_USER")
 DB_PASS = os.getenv("DB_PASS")
 DB_NAME = os.getenv("DB_NAME")
 SCHEMA = os.getenv("DB_SCHEMA")
+
+SHUTDOWN = os.getenv("SHUTDOWN")
 
 engine = create_engine(
     f"postgresql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require",
@@ -35,11 +39,12 @@ def set_search_path(dbapi_connection, connection_record):
     cursor.execute(f'SET search_path TO {schema}')
     cursor.close()
 
-def get_models_postgre(id_prj):
+def get_models_postgre(id_prj, id_cust):
 
-    query = text(f"SELECT distinct model_name FROM {SCHEMA}.v_projhist WHERE id_prj = :id_prj")
+    query = text(f"SELECT distinct model_name FROM {SCHEMA}.v_projhist WHERE id_prj = :id_prj AND partition_cust_id = :id_cust")
     params = {
-        "id_prj": int(id_prj)
+        "id_prj": int(id_prj),
+        "id_cust": int(id_cust)
     }
 
     df = pd.read_sql(query, engine, params=params)
@@ -47,12 +52,13 @@ def get_models_postgre(id_prj):
 
     return df_db
 
-def get_dataset_postgre(id_prj, version_name):
-
-    query = text(f"SELECT * FROM {SCHEMA}.v_prm_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+def get_dataset_postgre(id_prj, version_name, id_cust):
+    cols = 'id_prj, id_version, version_name, level1, level2, hist_date, hist_value, flag_adj'
+    query = text(f"SELECT {cols} FROM {SCHEMA}.v_prm_adj WHERE id_prj = :id_prj AND version_name = :version_name AND partition_cust_id = :id_cust")
     params = {
         "id_prj": int(id_prj),
-        "version_name": str(version_name)
+        "version_name": str(version_name),
+        "id_cust": int(id_cust)
     }
     df = pd.read_sql(query, engine, params=params)
     df = df.drop(columns=['id'])
@@ -64,20 +70,23 @@ def get_dataset_postgre(id_prj, version_name):
 
     return df_db
 
-def get_dataset(id_prj, version_name):
-    query = text(f"SELECT * FROM {SCHEMA}.v_ml_final_hist_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+def get_dataset(id_prj, version_name, id_cust):
+    cols = 'id_prj, id_version, version_name, level1, level2, hist_date, hist_value'
+    query = text(f"SELECT {cols} FROM {SCHEMA}.v_ml_final_hist_adj WHERE id_prj = :id_prj AND version_name = :version_name AND partition_cust_id = :id_cust")
     params = {
         "id_prj": int(id_prj),
-        "version_name": str(version_name)
+        "version_name": str(version_name),
+        "id_cust": int(id_cust)
     }
     df_adj = pd.read_sql(query, engine, params=params)
     df_adj['hist_date'] = pd.to_datetime(df_adj['hist_date'], format='%Y-%m-%d')
     df_adj['flag_adj'] = 1
 
-    query = text(f"SELECT * FROM {SCHEMA}.v_ml_final_hist_non_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+    query = text(f"SELECT {cols} FROM {SCHEMA}.v_ml_final_hist_non_adj WHERE id_prj = :id_prj AND version_name = :version_name AND partition_cust_id = :id_cust")
     params = {
         "id_prj": int(id_prj),
-        "version_name": str(version_name)
+        "version_name": str(version_name),
+        "id_cust": int(id_cust)
     }
     df_non_adj = pd.read_sql(query, engine, params=params)
     df_non_adj['hist_date'] = pd.to_datetime(df_non_adj['hist_date'], format='%Y-%m-%d')
@@ -90,11 +99,13 @@ def get_dataset(id_prj, version_name):
 
     return df_db
 
-def get_dataset_adj_postgre(id_prj, version_name):
-    query = text(f"SELECT * FROM {SCHEMA}.v_ml_final_hist_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+def get_dataset_adj_postgre(id_prj, version_name, id_cust):
+    cols = 'id_prj, id_version, version_name, level1, level2, hist_date, hist_value'
+    query = text(f"SELECT {cols} FROM {SCHEMA}.v_ml_final_hist_adj WHERE id_prj = :id_prj AND version_name = :version_name AND partition_cust_id = :id_cust")
     params = {
         "id_prj": int(id_prj),
-        "version_name": str(version_name)
+        "version_name": str(version_name),
+        "id_cust": int(id_cust)
     }
     df = pd.read_sql(query, engine, params=params)
     df['hist_date'] = pd.to_datetime(df['hist_date'], format='%Y-%m-%d')
@@ -105,11 +116,13 @@ def get_dataset_adj_postgre(id_prj, version_name):
 
     return df_db
 
-def get_dataset_non_adj_postgre(id_prj, version_name):
-    query = text(f"SELECT * FROM {SCHEMA}.v_ml_final_hist_non_adj WHERE id_prj = :id_prj AND version_name = :version_name")
+def get_dataset_non_adj_postgre(id_prj, version_name, id_cust):
+    cols = 'id_prj, id_version, version_name, level1, level2, hist_date, hist_value'
+    query = text(f"SELECT {cols} FROM {SCHEMA}.v_ml_final_hist_non_adj WHERE id_prj = :id_prj AND version_name = :version_name AND partition_cust_id = :id_cust")
     params = {
         "id_prj": int(id_prj),
-        "version_name": str(version_name)
+        "version_name": str(version_name),
+        "id_cust": int(id_cust)
     }
     df = pd.read_sql(query, engine, params=params)
     df['hist_date'] = pd.to_datetime(df['hist_date'], format='%Y-%m-%d')
@@ -120,12 +133,13 @@ def get_dataset_non_adj_postgre(id_prj, version_name):
 
     return df_db
 
-def get_setting_postgre(id_prj, version_name):
-
-    query = text(f"SELECT * FROM {SCHEMA}.v_prj_prc WHERE id_prj = :id_prj AND version_name = :version_name")
+def get_setting_postgre(id_prj, version_name, id_cust):
+    cols = 'id_prj, id_prj_prc, fcast_type, fcast_type_number, version_name, adj_include, level1, level2, model_name, out_std_dev, ad_smooth_method'
+    query = text(f"SELECT {cols} FROM {SCHEMA}.v_prj_prc WHERE id_prj = :id_prj AND version_name = :version_name AND partition_cust_id = :id_cust")
     params = {
         "id_prj": int(id_prj),
-        "version_name": str(version_name)
+        "version_name": str(version_name),
+        "id_cust": int(id_cust)
     }
     df = pd.read_sql(query, engine, params=params)
     df_db = cd.DataFrame.from_pandas(df)
@@ -310,7 +324,7 @@ def update_process_status_progress(id_prj, id_version):
         model_finished = result[0]
 
     status_progress = math.ceil((model_finished / running_models) * 100)
-    update_date = datetime.datetime.now()
+    update_date = datetime.datetime.now(pytz.timezone('Asia/Jakarta'))
 
     query = text(f"UPDATE {SCHEMA}.fplan_prj_prc SET status_progress = :status_progress , updated_date = :update_date WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
@@ -384,7 +398,7 @@ def update_model_finished(id_prj, id_version, current_process):
     engine.dispose()
 
 def update_end_date(id_prj, id_version):
-    end_date = datetime.datetime.now()
+    end_date = datetime.datetime.now(pytz.timezone('Asia/Jakarta'))
     query = text(f"UPDATE {SCHEMA}.fplan_prj_prc SET end_date = :end_date WHERE id_prj = :id_prj AND id_version = :id_version")
     params = {
         "id_prj": int(id_prj),
@@ -492,3 +506,11 @@ def get_forecast_time(dbase, dbset):
 # update_process_status_progress(101, 1, 0.1)
 
 # print(models)
+
+def ask_to_shutdown():
+    if SHUTDOWN == 'True':
+        try:
+            api_url = "http://103.197.188.37/shutdown_vm/"
+            requests.get(api_url)
+        except:
+            pass

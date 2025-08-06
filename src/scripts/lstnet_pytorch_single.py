@@ -25,7 +25,7 @@ from cuml.model_selection import train_test_split
 logger = logging.getLogger(__name__)
 DEVICE = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
-def run_model(id_user, dbase, dbset):
+def run_model(id_user, dbase, dbset, ex_id):
     try:
         logger.info("LSTNet Single forecast running.")
         id_prj = int(dbase['id_prj'].iloc[0].item())
@@ -34,7 +34,7 @@ def run_model(id_user, dbase, dbset):
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "RUNNING", "Model is running", "lstnet_pytorch_single.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "RUNNING", "Model is running", "lstnet_pytorch_single.py : run_model", execution_id=ex_id)
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
@@ -54,14 +54,18 @@ def run_model(id_user, dbase, dbset):
         if status:
             update_end_date(id_prj, id_version)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "FINISHED", "Finished running model", "lstnet_pytorch_single.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "FINISHED", "Finished running model", "lstnet_pytorch_single.py : run_model",
+                   start_date=start_time, end_date=end_time, execution_id=ex_id)
+        ask_to_shutdown()
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
         logger.error(f"Error in cnn_lstm_pytorch_single.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "ERROR", "Error in running model", "lstnet_pytorch_single.py : run_model : " + str(e))
+        logging_ml(id_user, id_prj, id_version, id_cust, "LSTNet", "ERROR", "Error in running model", "lstnet_pytorch_single.py : run_model : " + str(e),
+                   execution_id=ex_id)
         update_process_status(id_prj, id_version, 'ERROR')
+        ask_to_shutdown()
 
 def predict_model(df, st, t_forecast):
     try:
@@ -88,8 +92,8 @@ def predict_model(df, st, t_forecast):
         # Data Preparation
         df = df.sort_values(by='hist_date')
         # logger.info("Scaling data for LSTNet")
-        scaler = MinMaxScaler()
-        df['hist_value'] = scaler.fit_transform(df[['hist_value']])
+        scaler = GPUMinMaxScaler()
+        df["hist_value"] = cp.asarray(scaler.fit_transform(df["hist_value"])).flatten()
 
         df_t = df[['hist_date', 'hist_value']].dropna()
         
@@ -198,7 +202,7 @@ def predict_model(df, st, t_forecast):
                 new_input = np.array([[y_pred[-1]]])
                 forecast_input = torch.cat((forecast_input[:, 1:, :], torch.tensor(new_input, dtype=torch.float32).unsqueeze(0).to(DEVICE)), dim=1)
 
-            forecast_result = scaler.inverse_transform(np.array(forecast_result).reshape(-1, 1)).flatten()
+            forecast_result = scaler.inverse_transform(cp.array(forecast_result).reshape(-1, 1)).flatten()
             
             # logger.info(f"t_forecast length: {len(t_forecast)}, forecast_result length: {len(forecast_result)}")
             # Prediction Data Process

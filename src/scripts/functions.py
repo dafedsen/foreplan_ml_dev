@@ -91,3 +91,58 @@ def get_bias(y_true, y_pred):
 
 def print_process_percentage(current_process):
     print('\nCurrent Progress : ', current_process, '%\n')
+
+class GPUMinMaxScaler:
+    def __init__(self, feature_range=(0, 1)):
+        self.feature_range = feature_range
+        self.data_min_ = None
+        self.data_max_ = None
+        self.scale_ = None
+        self.min_ = None
+        self.n_features_in_ = None  # Tambahkan ini
+
+    def fit(self, X):
+        if isinstance(X, cd.Series):
+            X = X.to_cupy().reshape(-1, 1)
+        elif isinstance(X, cd.DataFrame):
+            X = X.to_cupy()
+        elif isinstance(X, cp.ndarray) and X.ndim == 1:
+            X = X.reshape(-1, 1)
+        elif not isinstance(X, cp.ndarray):
+            raise ValueError("Input must be a cudf.Series, cudf.DataFrame or cupy.ndarray")
+
+        self.data_min_ = cp.min(X, axis=0)
+        self.data_max_ = cp.max(X, axis=0)
+        self.scale_ = (self.feature_range[1] - self.feature_range[0]) / (self.data_max_ - self.data_min_ + 1e-9)
+        self.min_ = self.feature_range[0] - self.data_min_ * self.scale_
+        self.n_features_in_ = X.shape[1]  # Simpan jumlah fitur
+        return self
+
+    def transform(self, X):
+        if isinstance(X, cd.Series):
+            X = X.to_cupy().reshape(-1, 1)
+        elif isinstance(X, cd.DataFrame):
+            X = X.to_cupy()
+        elif isinstance(X, cp.ndarray) and X.ndim == 1:
+            X = X.reshape(-1, 1)
+        elif not isinstance(X, cp.ndarray):
+            raise ValueError("Input must be a cudf.Series, cudf.DataFrame or cupy.ndarray")
+
+        return X * self.scale_ + self.min_
+
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
+
+    def inverse_transform(self, X_scaled):
+        if isinstance(X_scaled, cd.Series):
+            X_scaled = X_scaled.to_cupy().reshape(-1, 1)
+        elif isinstance(X_scaled, cd.DataFrame):
+            X_scaled = X_scaled.to_cupy()
+        elif isinstance(X_scaled, cp.ndarray) and X_scaled.ndim == 1:
+            X_scaled = X_scaled.reshape(-1, 1)
+        elif not isinstance(X_scaled, cp.ndarray):
+            raise ValueError("Input must be a cudf.Series, cudf.DataFrame or cupy.ndarray")
+
+        return (X_scaled - self.min_) / self.scale_
+
+

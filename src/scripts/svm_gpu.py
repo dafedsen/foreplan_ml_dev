@@ -1,4 +1,5 @@
 from cuml.svm import SVR
+from cuml.svm import LinearSVR
 from cuml.model_selection import train_test_split
 import math
 from cuml.metrics import r2_score
@@ -18,7 +19,7 @@ from scripts.connection import *
 from scripts.functions import *
 from scripts.logger_ml import logging_ml
 
-def run_model(id_user, dbase, dbset):
+def run_model(id_user, dbase, dbset, ex_id):
     try:
         logger.info("Support Vector Machine forecast running.")
         id_prj = int(dbase['id_prj'].iloc[0].item())
@@ -27,7 +28,7 @@ def run_model(id_user, dbase, dbset):
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "SVM", "RUNNING", "Model is running", "svm_gpu.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "SVM", "RUNNING", "Model is running", "svm_gpu.py : run_model", execution_id=ex_id)
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
@@ -35,17 +36,18 @@ def run_model(id_user, dbase, dbset):
         pred, err = run_svm(dbase, t_forecast, dbset)
         end_time = time.time()
 
-        logger.info("Sending K-Nearest Neighbors forecast result.")
+        logger.info("Sending SVM forecast result.")
         send_process_result(pred, id_cust)
 
-        logger.info("Sending K-Nearest Neighbors forecast evaluation.")
+        logger.info("Sending SVM forecast evaluation.")
         send_process_evaluation(err, id_cust)
 
         print(str(timedelta(seconds=end_time - start_time)))
         status = check_update_process_status_success(id_prj, id_version)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "SVM", "FINISHED", "Finished running model", "svm_gpu.py : run_model")
-
+        logging_ml(id_user, id_prj, id_version, id_cust, "SVM", "FINISHED", "Finished running model", "svm_gpu.py : run_model",
+                   start_date=start_time, end_date=end_time, execution_id=ex_id)
+        ask_to_shutdown()
 
         if status:
             update_end_date(id_prj, id_version)
@@ -54,8 +56,10 @@ def run_model(id_user, dbase, dbset):
     
     except Exception as e:
         logger.error(f"Error in svm_gpu.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "KNN", "ERROR", "Error in running model", "knn_gpu.py : run_model : " + str(e))
+        logging_ml(id_user, id_prj, id_version, id_cust, "SVM", "ERROR", "Error in running model", "svm_gpu.py : run_model : " + str(e),
+                   execution_id=ex_id)
         update_process_status(id_prj, id_version, 'ERROR')
+        ask_to_shutdown()
 
 def predict_model(df, st, t_forecast):
     try:
@@ -101,12 +105,12 @@ def predict_model(df, st, t_forecast):
         y = data_lagged["hist_value"]
         
         # Data Splitting
-
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, shuffle=False)
 
         # Initiate Model and Train
         logger.info('Fitting model')
-        model = SVR(kernel='linear', C=1.0, gamma=0.1, epsilon=0.2)
+        kernel = 'linear'
+        model = build_svr(kernel=kernel, C=1.0, gamma=0.1, epsilon=0.2)
         model.fit(X_train, y_train)
         
         # Model Predict
@@ -343,3 +347,28 @@ def create_lagged_features(df, target_col, lags):
         df[f"lag_{lag}"] = df[target_col].shift(lag)
     df = df.dropna().reset_index(drop=True)
     return df
+
+def build_svr(kernel="linear", *, C=1.0, gamma=0.1, epsilon=0.2,
+              degree=3, coef0=0.0, tol=1e-3, max_iter=1000):
+    """
+    Return an SVR instance optimised for the requested kernel.
+
+    • "linear"  ➜  cuml.linear_model.LinearSVR  (no gamma/degree/coef0 needed)
+    • "rbf"/"poly"/"sigmoid" ➜ cuml.svm.SVR
+    """
+    kernel = kernel.lower()
+
+    if kernel == "linear":
+        # LinearSVR uses a different solver (coordinate descent) and ignores gamma/degree.
+        return LinearSVR(
+            C=C,
+            epsilon=epsilon,
+        )
+
+    # otherwise fall back to the generic SVR
+    return SVR(
+        kernel=kernel,
+        C=C,
+        gamma=gamma,
+        epsilon=epsilon,
+    )

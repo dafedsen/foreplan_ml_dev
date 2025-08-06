@@ -21,7 +21,7 @@ from scripts.connection import *
 from scripts.functions import *
 from scripts.logger_ml import logging_ml
 
-def run_model(id_user,dbase, dbset):
+def run_model(id_user,dbase, dbset, ex_id):
     try:
         logger.info("Exponential Smoothing forecast running.")
         id_prj = int(dbase['id_prj'].iloc[0].item())
@@ -30,7 +30,7 @@ def run_model(id_user,dbase, dbset):
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "Exponential Smoothing", "RUNNING", "Model is running", "exponential_smoothing_gpu.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "Exponential Smoothing", "RUNNING", "Model is running", "exponential_smoothing_gpu.py : run_model", execution_id=ex_id)
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
@@ -50,14 +50,17 @@ def run_model(id_user,dbase, dbset):
         if status:
             update_end_date(id_prj, id_version)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "Exponential Smoothing", "FINISHED", "Finished running model", "exponential_smoothing_gpu.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "Exponential Smoothing", "FINISHED", "Finished running model", "exponential_smoothing_gpu.py : run_model",
+                   start_date=start_time, end_date=end_time, execution_id=ex_id)
+        ask_to_shutdown()
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
         logger.error(f"Error in exponential_smoothing_gpu.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "Exponential Smoothing", "ERROR", "Error in running model", "exponential_smoothing_gpu.py : run_model : " + str(e))
+        logging_ml(id_user, id_prj, id_version, id_cust, "Exponential Smoothing", "ERROR", "Error in running model", "exponential_smoothing_gpu.py : run_model : " + str(e), execution_id=ex_id)
         update_process_status(id_prj, id_version, 'ERROR')
+        ask_to_shutdown()
 
 def predict_model(df, st, t_forecast):
 

@@ -1,7 +1,7 @@
 import cudf as cd
 import cupy as cp
 from cuml.neighbors import KNeighborsRegressor
-from cuml.preprocessing import MinMaxScaler
+from cuml.preprocessing import MinMaxScaler, StandardScaler, RobustScaler, MaxAbsScaler
 from cuml.model_selection import train_test_split
 from cuml.metrics import mean_squared_error
 from cuml.metrics import r2_score
@@ -12,12 +12,14 @@ import time
 import logging
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 from scripts.connection import *
 from scripts.functions import *
+from scripts.functions import GPUMinMaxScaler
 from scripts.logger_ml import logging_ml
 
-def run_model(id_user, dbase, dbset):
+def run_model(id_user, dbase, dbset, ex_id):
     try:
         logger.info("K-Nearest Neighbors forecast running.")
         id_prj = int(dbase['id_prj'].iloc[0].item())
@@ -26,7 +28,7 @@ def run_model(id_user, dbase, dbset):
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "KNN", "RUNNING", "Model is running", "knn_gpu.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "KNN", "RUNNING", "Model is running", "knn_gpu.py : run_model", execution_id=ex_id)
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
@@ -46,14 +48,18 @@ def run_model(id_user, dbase, dbset):
         if status:
             update_end_date(id_prj, id_version)
         
-        logging_ml(id_user, id_prj, id_version, id_cust, "KNN", "FINISHED", "Finished running model", "knn_gpu.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "KNN", "FINISHED", "Finished running model", "knn_gpu.py : run_model",
+                   start_date=start_time, end_date=end_time, execution_id=ex_id)
+        ask_to_shutdown()
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
         logger.error(f"Error in knn_gpu.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "KNN", "ERROR", "Error in running model", "knn_gpu.py : run_model : " + str(e))
+        logging_ml(id_user, id_prj, id_version, id_cust, "KNN", "ERROR", "Error in running model", "knn_gpu.py : run_model : " + str(e),
+                   execution_id=ex_id)
         update_process_status(id_prj, id_version, 'ERROR')
+        ask_to_shutdown()
 
 def predict_model(df, st, t_forecast):
 
@@ -77,32 +83,46 @@ def predict_model(df, st, t_forecast):
 
         # cleansing_outliers(df, SIGMA)
 
-        scaler = MinMaxScaler()
+        scaler = GPUMinMaxScaler()
         logger.info(f"Scaling data for {level1} - {level2}")
         df = df.sort_values(by='hist_date')
         df['hist_value'] = df.hist_value.astype('float32')
-        df["hist_value"] = scaler.fit_transform(df[["hist_value"]])
 
-        lookback = 7
+        df['hist_date'] = cd.to_datetime(df['hist_date'])
+        df['hist_date'] = (df['hist_date'] - df['hist_date'].min()).dt.days
+        # scaled_values = scaler.fit_transform(df["hist_value"])
+        # df["hist_value"] = cd.Series(scaled_values.ravel())
+        logger.info(f"Shape before transform data for {df['hist_value'].shape}")
+        df["hist_value"] = cp.asarray(scaler.fit_transform(df["hist_value"])).flatten()
+        logger.info(f"Shape after transform data for {df['hist_value'].shape}")
+
+        lookback = 3
         X, y = [], []
         logger.info(f"Preparing data for {level1} - {level2}")
         for i in range(lookback, len(df)):
             X.append(df.iloc[i - lookback:i]["hist_value"].to_numpy())
             y.append(df.iloc[i]["hist_value"].to_numpy())
 
+            # x_seq = df.iloc[i - lookback:i]["hist_value"]
+            # y_val = df.iloc[i]["hist_value"]
+
+            # # Append hasilnya sebagai CuPy array
+            # X.append(cp.array(x_seq.to_cupy()))
+            # y.append(y_val)
+
         X = cp.array(X)
         y = cp.array(y)
-        logger.info(f"Splitting data for {level1} - {level2}")
-        train_size = int(len(X) * 0.8)
+
+        train_size = int(len(X) * 0.9)
         X_train, X_test = X[:train_size], X[train_size:]
         y_train, y_test = y[:train_size], y[train_size:]
-        logger.info(f"Finding params n for {level1} - {level2}")
-        n_range = (1, 20)
+
+        n_range = (1, 5)
         best_n = find_best_n_neighbors(X_train, X_test, y_train, y_test, n_range)
-        logger.info(f"Training model for {level1} - {level2}")
+
         model = KNeighborsRegressor(n_neighbors=best_n, metric="euclidean", algorithm="brute")
         model.fit(X_train, y_train)
-        logger.info(f"Predicting for {level1} - {level2}")
+
         forecast = []
         last_features = X_test[-1].copy()
 
@@ -112,10 +132,10 @@ def predict_model(df, st, t_forecast):
 
             last_features[:-1] = last_features[1:]
             last_features[-1] = next_value
+
         logger.info(f"Unscaling data for {level1} - {level2}")
         y_pred = scaler.inverse_transform(cp.array(forecast).reshape(-1, 1))
         y_pred = cp.array(y_pred).flatten()
-        print(y_pred)
 
         pred['date'] = t_forecast['date']
         pred[level2] = y_pred

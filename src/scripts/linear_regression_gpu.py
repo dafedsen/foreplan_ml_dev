@@ -24,7 +24,7 @@ from scripts.functions import *
 from scripts.logger_ml import logging_ml
 
 # @delayed
-def run_model(id_user, dbase, dbset):
+def run_model(id_user, dbase, dbset, ex_id):
     try:
         logger.info("Linear Regression forecast running.")
         id_prj = int(dbase['id_prj'].iloc[0].item())
@@ -33,7 +33,7 @@ def run_model(id_user, dbase, dbset):
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "Linear Regression", "RUNNING", "Model is running", "linear_regression_gpu.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "Linear Regression", "RUNNING", "Model is running", "linear_regression_gpu.py : run_model", execution_id=ex_id)
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
@@ -53,14 +53,18 @@ def run_model(id_user, dbase, dbset):
         if status:
             update_end_date(id_prj, id_version)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "Linear Regression", "FINISHED", "Finished running model", "linear_regression_gpu.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "Linear Regression", "FINISHED", "Finished running model", "linear_regression_gpu.py : run_model",
+                   start_date=start_time, end_date=end_time, execution_id=ex_id)
+        ask_to_shutdown()
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
         logger.error(f"Error in linear_regression_gpu.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "Linear Regression", "ERROR", "Error in running model", "linear_regression_gpu.py : run_model : " + str(e))
+        logging_ml(id_user, id_prj, id_version, id_cust, "Linear Regression", "ERROR", "Error in running model", "linear_regression_gpu.py : run_model : " + str(e),
+                   execution_id=ex_id)
         update_process_status(id_prj, id_version, 'ERROR')
+        ask_to_shutdown()
 
 def predict_model(df, st, t_forecast):
 
@@ -95,14 +99,19 @@ def predict_model(df, st, t_forecast):
         y = df['hist_value'].values.get()
         
         # Data Splitting
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
+        # X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.1, random_state=42)
+        split_idx = int(len(X) * 0.9)
+        X_train, X_test = X[:split_idx], X[split_idx:]
+        y_train, y_test = y[:split_idx], y[split_idx:]
 
         # Initiate Model and Train
         model = LinearRegression()
         model.fit(X_train, y_train)
         
         # Model Predict
-        X_pred = get_weeks_by_number(t_forecast.shape[0] + X_test.shape[0])
+        # X_pred = get_weeks_by_number(t_forecast.shape[0] + X_test.shape[0])
+        last_day = df['hist_date'].max()
+        X_pred = cp.arange(last_day + 1, last_day + 1 + t_forecast.shape[0] + X_test.shape[0]).reshape(-1, 1)
         y_pred = model.predict(X_pred)
 
         # Prediction Data Process

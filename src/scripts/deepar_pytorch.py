@@ -17,6 +17,7 @@ import logging
 
 import torch
 import torch.nn as nn
+import torch.distributions as D
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 from cuml.preprocessing import MinMaxScaler, LabelEncoder
 from cuml.metrics import r2_score, mean_squared_error
@@ -27,26 +28,25 @@ DEVICE = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
 def run_model(id_user, dbase, dbset, ex_id):
     try:
-        logger.info("CNN LSTM Single forecast running.")
-        logger.info("Prophet forecast running.")
+        logger.info("DeepAR Single forecast running.")
         id_prj = int(dbase['id_prj'].iloc[0].item())
         version_name = dbase['version_name'].iloc[0]
 
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "CNN LSTM", "RUNNING", "Model is running", "cnn_lstm_pytorch_single.py : run_model", execution_id=ex_id)
+        logging_ml(id_user, id_prj, id_version, id_cust, "DeepAR", "RUNNING", "Model is running", "deepar_pytorch.py : run_model", execution_id=ex_id)
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
         start_time = time.time()
-        pred, err = run_cnn_lstm(dbase, t_forecast, dbset)
+        pred, err = run_deepar(dbase, t_forecast, dbset)
         end_time = time.time()
 
-        logger.info("Sending CNN LSTM Single forecast result.")
+        logger.info("Sending DeepAR Single forecast result.")
         send_process_result(pred, id_cust)
 
-        logger.info("Sending CNN LSTM Single forecast evaluation.")
+        logger.info("Sending DeepAR Single forecast evaluation.")
         send_process_evaluation(err, id_cust)
 
         print(str(timedelta(seconds=end_time - start_time)))
@@ -55,68 +55,67 @@ def run_model(id_user, dbase, dbset, ex_id):
         if status:
             update_end_date(id_prj, id_version)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "CNN LSTM", "FINISHED", "Finished running model", "cnn_lstm_pytorch_single.py : run_model",
+        logging_ml(id_user, id_prj, id_version, id_cust, "DeepAR", "FINISHED", "Finished running model", "deepar_pytorch.py : run_model",
                    start_date=start_time, end_date=end_time, execution_id=ex_id)
-        ask_to_shutdown()
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
-        logger.error(f"Error in cnn_lstm_pytorch_single.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "CNN LSTM", "ERROR", "Error in running model", "cnn_lstm_pytorch_single.py : run_model : " + str(e), execution_id=ex_id)
+        logger.error(f"Error in deepar_pytorch.run_model : {str(e)}")
+        logging_ml(id_user, id_prj, id_version, id_cust, "DeepAR", "ERROR", "Error in running model", "deepar_pytorch.py : run_model : " + str(e), execution_id=ex_id)
         update_process_status(id_prj, id_version, 'ERROR')
-        ask_to_shutdown()
 
 def predict_model(df, st, t_forecast):
-
     try:
         pred = cd.DataFrame()
         
         # Preparing Parameter
         level1 = df['level1'].iloc[0]
         level2 = df['level2'].iloc[0]
-        logger.info(f"Predicting {level1} - {level2}")
         PROCESS = int(st['id_prj_prc'].iloc[0].item())
         
         ADJUSTMENT = st['adj_include'].iloc[0]
 
-        # SIGMA = st['out_std_dev'][0]
-
-        # SMOOTHING = st['ad_smooth_method'][0]
-
-        # # Data Cleansing          
-        # if ADJUSTMENT == 'Yes':
-        #     adjusting_data(df, SMOOTHING, SIGMA)
-
-        # cleansing_outliers(df, SIGMA)
+        logger.info(f"Predicting {level1} - {level2} - {PROCESS} - {ADJUSTMENT}")
 
         # Data Preparation
         df = df.sort_values(by='hist_date')
-        logger.info("Scaling data for CNN LSTM")
-        print("Tipe:", type(df['hist_value']))
-        print("Shape:", df['hist_value'].shape)
+        # logger.info("Scaling data for LSTNet")
         scaler = GPUMinMaxScaler()
-        # scaled_values = scaler.fit_transform(df["hist_value"])
-        # df["hist_value"] = cd.Series(scaled_values.ravel())
         df["hist_value"] = cp.asarray(scaler.fit_transform(df["hist_value"])).flatten()
-        df_t = df.copy()
-        df_t = df_t[['hist_date', 'hist_value']]
+
+        df_t = df[['hist_date', 'hist_value']].dropna()
         
-        n_lookback = 5
         n_forecast = t_forecast.shape[0]
-        logger.info(f"Creating sequences for {level1} - {level2}")
-        X, Y = create_sequences(df_t.drop(columns=['hist_date']).to_cupy(), n_lookback, n_forecast)
+        n_lookback = 5
+
+        total_n_loopback_required = n_lookback + n_forecast
+
+        if len(df) < total_n_loopback_required:
+            n_lookback = max(1, len(df) - n_forecast)
+            logger.warning(f"[{level1} - {level2} - {PROCESS} - {ADJUSTMENT}] Adjusted n_lookback to {n_lookback} due to limited data")
+
+        data_array = df_t.drop(columns=['hist_date']).to_cupy()
+
+        if data_array.ndim == 1:
+            data_array = data_array.reshape(-1, 1)
+
+        # logger.info(f"Creating sequences for {level1} - {level2}")
+        X, Y = create_sequences(data_array, n_lookback, n_forecast)
+
         X = cp.asnumpy(X)
         Y = cp.asnumpy(Y)
 
         # Data Splitting
         logger.info(f"Splitting data for {level1} - {level2}")
-        split_idx = int(len(X) * 0.9)
+        split_idx = int(len(X) * 0.8)
         X_train, X_test = X[:split_idx], X[split_idx:]
         Y_train, Y_test = Y[:split_idx], Y[split_idx:]
+
         logger.info(f"X_train shape: {X_train.shape}")
         train_dataset = TimeSeriesDataset(X_train, Y_train)
         test_dataset = TimeSeriesDataset(X_test, Y_test)
+
         logger.info(f"train_dataset length: {len(train_dataset)}")
         train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=32, shuffle=False)
@@ -124,18 +123,27 @@ def predict_model(df, st, t_forecast):
         # Initiate Model and Train
         input_size = X_train.shape[2]
         hidden_size = 128
-        num_layers = 1
+        cnn_kernel_size = min(n_lookback, 3)
         output_size = n_forecast
         dropout = 0.1
         learning_rate = 0.001
         num_epochs = 50
 
         try:
-            logger.info(f"Init Training model for {level1} - {level2}")
-            model = AdvancedLSTM(input_size, hidden_size, num_layers, output_size, dropout, bidirectional=True)
+            logger.info(f"Init Training model for {level1} - {level2} - {PROCESS} - {ADJUSTMENT}")
+            model = DeepAR(
+                input_size=input_size,
+                hidden_size=hidden_size,
+                cnn_kernel_size=cnn_kernel_size,
+                skip_size=0,
+                output_size=output_size,
+                dropout=dropout,
+                highway_window=5,
+                likelihood='gaussian'
+            )
             criterion = nn.MSELoss()
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-            logger.info(f"Training model for {level1} - {level2}")
+
             model.to(DEVICE)
             model.train()
             for epoch in range(num_epochs):
@@ -143,46 +151,36 @@ def predict_model(df, st, t_forecast):
                     X_batch = X_batch.to(DEVICE)
                     Y_batch = Y_batch.to(DEVICE)
                     optimizer.zero_grad()
-                    Y_pred = model(X_batch)
 
-                    if torch.isnan(Y_pred).any():
-                        raise ValueError("NaN detected in model output Y_pred")
-                    if torch.isinf(Y_pred).any():
-                        raise ValueError("Inf detected in model output Y_pred")
-                    
-                    loss = criterion(Y_pred, Y_batch)
-
-                    if torch.isnan(loss):
-                        raise ValueError("NaN detected in loss computation")
-
+                    dist = model(X_batch, return_distribution=True)
+                    loss = model.loss(dist, Y_batch)
                     loss.backward()
                     optimizer.step()
-                print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
+                logger.info(f"Epoch {epoch + 1}/{num_epochs}, Loss: {loss.item():.4f}")
         except Exception as e:
-            print('ERROR EXCEPTION TRAINING MODEL: ', e)
+            logger.error(f'Error training DeepAR: {e}')
 
         # Model Predict
         try:
-            logger.info(f"Predicting model for {level1} - {level2}")
+            logger.info(f"Predicting model for {level1} - {level2} - {PROCESS} - {ADJUSTMENT}")
             model.to(DEVICE)
             model.eval()
             last_data = df_t[['hist_value']].values[-n_lookback:]
             forecast_input = torch.tensor(last_data, dtype=torch.float32).to(DEVICE).unsqueeze(0)
-
             forecast_result = []
+
             for _ in range(t_forecast.shape[0]):
-                y_pred = model(forecast_input).cpu().detach().numpy().flatten()
-                if np.isnan(y_pred).any():
-                    raise ValueError(f"NaN detected in model output during prediction at step {_}")
+                dist = model(forecast_input, return_distribution=True)
+                y_pred = dist.sample().cpu().detach().numpy().flatten()
                 forecast_result.append(y_pred[-1])
 
                 # Update input for next step
-                new_input = np.array([[y_pred[-1]]])
-                forecast_input = torch.cat((forecast_input[:, 1:, :], torch.tensor(new_input, dtype=torch.float32).unsqueeze(0).to(DEVICE)), dim=1)
+                new_input = torch.tensor([[y_pred[-1]]], dtype=torch.float32).unsqueeze(0).to(DEVICE)
+                forecast_input = torch.cat((forecast_input[:, 1:, :], new_input), dim=1)
 
             forecast_result = scaler.inverse_transform(cp.array(forecast_result).reshape(-1, 1)).flatten()
             
-            logger.info(f"t_forecast length: {len(t_forecast)}, forecast_result length: {len(forecast_result)}")
+            # logger.info(f"t_forecast length: {len(t_forecast)}, forecast_result length: {len(forecast_result)}")
             # Prediction Data Process
             pred['date'] = t_forecast['date']
             pred[level2] = forecast_result
@@ -192,7 +190,7 @@ def predict_model(df, st, t_forecast):
             pred = pred[['adj_include', 'id_prj_prc', 'date', 'level1', level2]]
             logger.info("\n%s", pred[["date", level2]])
         except Exception as e:
-            print('ERROR EXCEPTION PREDICTING MODEL: ', e)
+            logger.error(f'Error Predict DeepAR: {e}')
             pred['date'] = t_forecast['date']
             pred[level2] = 0
             pred['level1'] = level1
@@ -201,7 +199,7 @@ def predict_model(df, st, t_forecast):
             pred = pred[['adj_include', 'id_prj_prc', 'date', 'level1', level2]]
 
     except Exception as e:
-        print('ERROR EXCEPTION in predict_model cnn lstm single : ', e)
+        logger.error(f'Error in predict_model DeepAR {level1} - {level2} - {PROCESS} - {ADJUSTMENT}: {e}')
         pred['date'] = t_forecast['date']
         pred[level2] = 0
         pred['level1'] = level1
@@ -222,6 +220,8 @@ def predict_model(df, st, t_forecast):
             for X_batch, Y_batch in test_loader:
                 X_batch = X_batch.to(DEVICE)
                 Y_batch = Y_batch.to(DEVICE)
+                dist = model(X_batch.to(DEVICE), return_distribution=True)
+                y_pred = dist.sample()
                 y_pred = model(X_batch).squeeze()
                 predictions.extend(y_pred.cpu().numpy())
                 actuals.extend(Y_batch.cpu().numpy())
@@ -269,7 +269,7 @@ def predict_model(df, st, t_forecast):
         err['id_prj_prc'] = PROCESS
 
     except Exception as e:
-        print('ERROR EXCEPTION in evaluate_model cnn lstm single : ', e)
+        logger.error(f'Error in evaluate_model DeepAR : {e}')
         rmse = 999999999
         r2 = 999999999
         bias = 999999999
@@ -289,10 +289,13 @@ def predict_model(df, st, t_forecast):
     except Exception as e:
         print(f"An unexpected error occurred in evaluate_model: {e}")
 
+    logger.info("\n%s", pred[["date", level2]])
+    logger.info("\n%s", err)
+
     return pred, err
 
 
-def run_cnn_lstm(dbase, t_forecast, dbset):
+def run_deepar(dbase, t_forecast, dbset):
 
     project = int(dbase['id_prj'].iloc[0].item())
     id_version = extract_number(dbset['version_name'].iloc[0])
@@ -307,7 +310,8 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
     total_loop = len(level1_list) * len(level2_list)
     current_loop = 0
 
-    lr_settings = dbset[dbset['model_name'] == 'CNN LSTM']
+    # Update nanti klo deploy
+    lr_settings = dbset[dbset['model_name'] == 'LSTNet']
     lr_settings = lr_settings[['adj_include', 'id_prj_prc', 'level1', 'level2', 'model_name', 'out_std_dev', 'ad_smooth_method']]
 
     id_prj_prc_y = lr_settings[lr_settings['adj_include'] == 'Yes']['id_prj_prc'].iloc[0]
@@ -398,7 +402,7 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
         var_name='level2', 
         value_name='hist_value'
         )
-    forecast_result['id_model'] = 4
+    forecast_result['id_model'] = 10
 
     forecast_result['date'] = cd.to_datetime(forecast_result['date'])
     forecast_result = forecast_result.groupby(['level1', 'level2', 'adj_include', 'id_prj_prc']).apply(
@@ -416,7 +420,7 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
         var_name='err_method',
         value_name='err_value'
     )
-    error_result['id_model'] = 4
+    error_result['id_model'] = 10
     error_result['partition_cust_id'] = id_cust
     error_result = error_result.drop_duplicates()
     error_result.reset_index(drop=True, inplace=True)
@@ -431,8 +435,6 @@ def run_cnn_lstm(dbase, t_forecast, dbset):
     error_result = error_result[['id_prj_prc', 'id_err_method', 'id_model', 'level1', 'level2', 'err_value', 'partition_cust_id']]
     error_result = error_result.dropna()
     error_result['err_value'] = error_result['err_value'].astype(float).round(3)
-    # error_result['err_value'] = error_result['err_value'].map(lambda x: f"{x:.3f}")
-    # error_result['err_value'] = error_result['err_value'].apply(lambda x: round(x, 3))
 
     return forecast_result, error_result
 
@@ -442,6 +444,14 @@ def create_sequences(data, n_lookback, n_forecast):
         X.append(data[i:i + n_lookback, :])
         Y.append(data[i + n_lookback:i + n_lookback + n_forecast, 0])
     return cp.array(X), cp.array(Y)
+
+def validate_dataframe(df, required_columns):
+    for col in required_columns:
+        if col not in df.columns:
+            raise ValueError(f"Missing column: {col}")
+        if df[col].isnull().any():
+            raise ValueError(f"Column '{col}' must not contain nulls.")
+    return df
 
 class TimeSeriesDataset(Dataset):
     def __init__(self, X, Y):
@@ -459,57 +469,49 @@ class TimeSeriesDataset(Dataset):
     def __getitem__(self, idx):
         return self.X[idx], self.Y[idx]
     
-class AdvancedLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, output_size, dropout=0.3, bidirectional=True):
-        super(AdvancedLSTM, self).__init__()
-
+class DeepAR(nn.Module):
+    def __init__(self, input_size, hidden_size, cnn_kernel_size=None, skip_size=None,
+                 output_size=1, dropout=0.1, highway_window=None, likelihood='gaussian'):
+        super(DeepAR, self).__init__()
+        self.input_size = input_size
         self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.bidirectional = bidirectional
-        num_directions = 2 if bidirectional else 1
+        self.output_size = output_size
+        self.likelihood = likelihood
 
-        # LSTM Layer (Bidirectional + Multiple Layers)
-        self.lstm = nn.LSTM(
-            input_size,
-            hidden_size,
-            num_layers,
-            batch_first=True,
-            dropout=dropout,
-            bidirectional=bidirectional
-        )
+        self.rnn = nn.LSTM(input_size, hidden_size, batch_first=True)
+        self.dropout = nn.Dropout(dropout)
+        self.mu_layer = nn.Linear(hidden_size, output_size)
+        self.sigma_layer = nn.Linear(hidden_size, output_size)
+        self.softplus = nn.Softplus()
 
-        # Batch Normalization Layer
-        self.batch_norm = nn.BatchNorm1d(hidden_size * num_directions)
+    def forward(self, x, return_distribution=False):
+        # x shape: [B, T, F]
+        batch_size, seq_len, _ = x.size()
+        out, _ = self.rnn(x)  # [B, T, H]
+        out = self.dropout(out)
+        last_hidden = out[:, -1, :]  # [B, H]
+        
+        mu = self.mu_layer(last_hidden)       # [B, output_size]
+        sigma = self.softplus(self.sigma_layer(last_hidden))  # [B, output_size]
 
-        # Fully Connected Layers with Activation & Dropout
-        self.fc1 = nn.Linear(hidden_size * num_directions, hidden_size * 2)
-        self.relu1 = nn.ReLU()
-        self.dropout1 = nn.Dropout(dropout)
-
-        self.fc2 = nn.Linear(hidden_size * 2, hidden_size)
-        self.relu2 = nn.LeakyReLU()
-        self.dropout2 = nn.Dropout(dropout)
-
-        self.fc3 = nn.Linear(hidden_size, output_size)
-
-    def forward(self, x):
-        lstm_out, (hn, cn) = self.lstm(x)
-
-        if self.bidirectional:
-            last_hidden = torch.cat((hn[-2], hn[-1]), dim=1)
+        if return_distribution:
+            if self.likelihood == 'gaussian':
+                dist = D.Normal(mu, sigma)
+            elif self.likelihood == 'laplace':
+                dist = D.Laplace(mu, sigma)
+            else:
+                raise ValueError(f"Unsupported likelihood: {self.likelihood}")
+            return dist
         else:
-            last_hidden = hn[-1]
+            return mu
 
-        norm_hidden = self.batch_norm(last_hidden)
+    def sample(self, x, n_samples=100):
+        """ Sample future forecasts based on learned distribution """
+        dist = self.forward(x, return_distribution=True)
+        return dist.sample((n_samples,))  # shape: [n_samples, B, output_size]
 
-        out = self.fc1(norm_hidden)
-        out = self.relu1(out)
-        out = self.dropout1(out)
-
-        out = self.fc2(out)
-        out = self.relu2(out)
-        out = self.dropout2(out)
-
-        out = self.fc3(out)
-
-        return out
+    def loss(self, prediction_dist, target):
+        if self.likelihood in ['gaussian', 'laplace']:
+            return -prediction_dist.log_prob(target).mean()
+        else:
+            raise ValueError(f"Unsupported likelihood: {self.likelihood}")

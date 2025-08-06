@@ -20,7 +20,7 @@ from cuml.tsa.auto_arima import AutoARIMA as auto_arima
 from cuml.metrics import r2_score
 from cuml.model_selection import train_test_split
 
-def run_model(id_user, dbase, dbset):
+def run_model(id_user, dbase, dbset, ex_id):
     try:
         logger.info("Auto ARIMA forecast running.")
 
@@ -30,7 +30,7 @@ def run_model(id_user, dbase, dbset):
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
         
-        logging_ml(id_user, id_prj, id_version, id_cust, "Auto ARIMA", "RUNNING", "Model is running", "auto_arima_gpu.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "Auto ARIMA", "RUNNING", "Model is running", "auto_arima_gpu.py : run_model", execution_id=ex_id)
 
         t_forecast = get_forecast_time(dbase, dbset)    
         
@@ -52,14 +52,17 @@ def run_model(id_user, dbase, dbset):
         if status:
             update_end_date(id_prj, id_version)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "Auto ARIMA", "FINISHED", "Finished running model", "auto_arima_gpu.py : run_model")
+        logging_ml(id_user, id_prj, id_version, id_cust, "Auto ARIMA", "FINISHED", "Finished running model", "auto_arima_gpu.py : run_model",
+                   start_date=start_time, end_date=end_time, execution_id=ex_id)
+        ask_to_shutdown()
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
         logger.error(f"Error in auto_arima_gpu.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "Auto ARIMA", "ERROR", "Error in running model", "auto_arima_gpu.py : run_model : " + str(e))
+        logging_ml(id_user, id_prj, id_version, id_cust, "Auto ARIMA", "ERROR", "Error in running model", "auto_arima_gpu.py : run_model : " + str(e), execution_id=ex_id)
         update_process_status(id_prj, id_version, 'ERROR')
+        ask_to_shutdown()
 
 def predict_model(df, st, t_forecast):
 
@@ -100,8 +103,8 @@ def predict_model(df, st, t_forecast):
 
         # Initiate Model and Train
         model = auto_arima(train)
-        model.search(p=(0, 5), q=(0, 5),
-             P=range(5), Q=range(5), method="auto", truncate=100)
+        model.search(p=(0, 10), q=(0, 10),
+             P=range(10), Q=range(10), method="auto", truncate=100)
         model.fit(method="ml")
 
         # Model Predict
