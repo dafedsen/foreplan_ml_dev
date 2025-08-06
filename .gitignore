@@ -23,3 +23,7 @@ env/
 
 # Datasets
 db_dummy/
+
+# Directories
+main/
+stg/
