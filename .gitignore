@@ -20,6 +20,7 @@ env/
 # Environment
 .env
 *.rest
+*.sh
 
 # Datasets
 db_dummy/
@@ -27,3 +28,7 @@ db_dummy/
 # Directories
 main/
 stg/
+
+# Python files
+check_ip.py
+connect_db.py

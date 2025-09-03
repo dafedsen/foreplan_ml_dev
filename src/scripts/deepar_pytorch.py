@@ -311,7 +311,7 @@ def run_deepar(dbase, t_forecast, dbset):
     current_loop = 0
 
     # Update nanti klo deploy
-    lr_settings = dbset[dbset['model_name'] == 'LSTNet']
+    lr_settings = dbset[dbset['model_name'] == 'DeepAR']
     lr_settings = lr_settings[['adj_include', 'id_prj_prc', 'level1', 'level2', 'model_name', 'out_std_dev', 'ad_smooth_method']]
 
     id_prj_prc_y = lr_settings[lr_settings['adj_include'] == 'Yes']['id_prj_prc'].iloc[0]
@@ -402,7 +402,7 @@ def run_deepar(dbase, t_forecast, dbset):
         var_name='level2', 
         value_name='hist_value'
         )
-    forecast_result['id_model'] = 10
+    forecast_result['id_model'] = 11
 
     forecast_result['date'] = cd.to_datetime(forecast_result['date'])
     forecast_result = forecast_result.groupby(['level1', 'level2', 'adj_include', 'id_prj_prc']).apply(
@@ -420,7 +420,7 @@ def run_deepar(dbase, t_forecast, dbset):
         var_name='err_method',
         value_name='err_value'
     )
-    error_result['id_model'] = 10
+    error_result['id_model'] = 11
     error_result['partition_cust_id'] = id_cust
     error_result = error_result.drop_duplicates()
     error_result.reset_index(drop=True, inplace=True)

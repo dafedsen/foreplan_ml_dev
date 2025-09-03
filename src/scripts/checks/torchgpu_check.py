@@ -1,7 +1,9 @@
 import torch
 
-gpu_availability = torch.cuda.is_available()
-print('GPU availability:', gpu_availability)
+print("CUDA available:", torch.cuda.is_available())
+print("cuDNN version:", torch.backends.cudnn.version())
+print("GPU name:", torch.cuda.get_device_name(0))
 
-gpu_name = torch.cuda.get_device_name(0)
-print('GPU name:', gpu_name)
+x = torch.rand(10000, 10000, device="cuda")
+y = torch.mm(x, x)
+print("Matrix multiply done on:", y.device)

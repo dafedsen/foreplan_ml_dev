@@ -1,5 +1,9 @@
 import sys
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+WHERE_AM_I = os.getenv("WHERE_AM_I")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(BASE_DIR, "scripts")
@@ -41,10 +45,12 @@ class RequestData(BaseModel):
     id_prj: int
     version_name: str
 
-# def upload_file(client):
-#     client.upload_file(os.path.join(BASE_DIR, "tasks.py"))
-#     client.upload_file(os.path.join(BASE_DIR, "scripts/linear_regression_gpu.py"))
-#     client.upload_file(os.path.join(BASE_DIR, "scripts/prophet_cpu.py"))
+@app.get("/")
+async def connect():
+    try:
+        return {"status": f"{WHERE_AM_I}"}
+    except Exception as e:
+        return {"error": str(e)}
 
 @app.post("/process_forecast/")
 async def process_forecast(data: RequestData, background_tasks: BackgroundTasks):

@@ -480,6 +480,7 @@ class AdvancedLSTM(nn.Module):
 
         # Batch Normalization Layer
         self.batch_norm = nn.BatchNorm1d(hidden_size * num_directions)
+        # self.batch_norm = nn.LayerNorm(hidden_size * num_directions)
 
         # Fully Connected Layers with Activation & Dropout
         self.fc1 = nn.Linear(hidden_size * num_directions, hidden_size * 2)

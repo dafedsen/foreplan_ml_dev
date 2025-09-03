@@ -86,16 +86,6 @@ def predict_model(df, st, t_forecast):
         PROCESS = int(st['id_prj_prc'].iloc[0].item())
         
         ADJUSTMENT = st['adj_include'].iloc[0]
-
-        # SIGMA = st['out_std_dev'][0]
-
-        # SMOOTHING = st['ad_smooth_method'][0]
-
-        # # Data Cleansing          
-        # if ADJUSTMENT == 'Yes':
-        #     adjusting_data(df, SMOOTHING, SIGMA)
-
-        # cleansing_outliers(df, SIGMA)
        
         # Data Preparation
         df = df.sort_values(by='hist_date')
@@ -129,9 +119,12 @@ def predict_model(df, st, t_forecast):
         y_pred = y_pred.to_pandas()
         y_pred = model.predict(y_pred)
 
+        print('y_pred shape : ', y_pred.shape)
+        print('t_forecast shape : ', t_forecast.shape)
+
         # Prediction Data Process
-        pred['date'] = t_forecast['date']
-        pred[level2] = y_pred['yhat']
+        pred['date'] = t_forecast['date'].reset_index(drop=True)
+        pred[level2] = y_pred['yhat'].reset_index(drop=True)
         pred['level1'] = level1
         pred['adj_include'] = ADJUSTMENT
         pred['id_prj_prc'] = PROCESS
