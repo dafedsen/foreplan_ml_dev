@@ -22,7 +22,8 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.data import NaNLabelEncoder
-from pytorch_forecasting.models import TemporalFusionTransformer
+from pytorch_forecasting.models import NBeats
+from pytorch_forecasting.data import GroupNormalizer, TorchNormalizer
 from torchmetrics import MeanSquaredError
 from pytorch_forecasting.metrics import RMSE
 import lightning.pytorch as pl
@@ -107,13 +108,12 @@ def predict_model(df, st, t_forecast):
             #     df_t["hist_date"].dt.month, 
             #     categories=list(range(1,13)),
             #     ordered=False
-            # )
+            # ).astype(str).astype('category')
             # df_t["dayofweek"] = pd.Categorical(
             #     df_t["hist_date"].dt.dayofweek, 
             #     categories=list(range(0,7)),
             #     ordered=False
-            # )
-            df_t['dayofweek'] = df_t['hist_date'].dt.dayofweek.astype(str)
+            # ).astype(str).astype('category')
             df_t = df_t.to_pandas()
             logger.info(f'df_t type : {df_t.dtypes}')
         except Exception as e:
@@ -137,15 +137,13 @@ def predict_model(df, st, t_forecast):
                 time_idx="time_idx",
                 target="hist_value",
                 group_ids=["series"],
-                min_encoder_length=max_encoder_length // 2,
+                min_encoder_length=max_encoder_length,
                 max_encoder_length=max_encoder_length,
                 min_prediction_length=max_prediction_length,
                 max_prediction_length=max_prediction_length,
-                static_categoricals=["series"],  # hanya 1 kategori
-                time_varying_known_categoricals=["dayofweek"],
-                time_varying_known_reals=["time_idx"],  # kita tahu time_idx di masa depan
+                # time_varying_known_categoricals=["month", "dayofweek"],
                 time_varying_unknown_reals=["hist_value"],  # target di masa lalu
-                target_normalizer=None,  # bisa pakai Normalizer jika perlu
+                target_normalizer=TorchNormalizer(method="standard"),  # bisa pakai Normalizer jika perlu
                 allow_missing_timesteps=True,
             )
         except Exception as e:
@@ -171,33 +169,31 @@ def predict_model(df, st, t_forecast):
             logger.error(f'Error data loader : {str(e)}')
 
         try:
-            tft = TemporalFusionTransformer.from_dataset(
+            model = NBeats.from_dataset(
                 training,
-                hidden_size=64,
-                lstm_layers=2,
-                attention_head_size=4,
-                dropout=0.2,
-                hidden_continuous_size=16,
-                output_size=1,  # regresi
                 learning_rate=1e-3,
-                loss=RMSE(),
-                reduce_on_plateau_patience=4,
+                log_interval=10,
+                log_val_interval=1,
+                weight_decay=1e-2,
+                widths=[512, 512],
+                backcast_loss_ratio=0.0,
+                loss=RMSE(),   # bisa ganti ke RMSE() juga kalau mau lebih mirip TFT
+                optimizer="adam"
             )
         except Exception as e:
-            logger.error(f'Error tft from dataset : {str(e)}')
+            logger.error(f'Error from dataset : {str(e)}')
 
         try:
-            checkpoint_callback = ModelCheckpoint(
-                save_top_k=1,
-                monitor="val_loss",
-                mode="min"
-            )
+            # checkpoint_callback = ModelCheckpoint(
+            #     save_top_k=1,
+            #     monitor="val_loss",
+            #     mode="min"
+            # )
 
             trainer = pl.Trainer(
                 max_epochs=50,
                 accelerator='cuda',
                 devices=1,
-                callbacks=[checkpoint_callback],
                 enable_checkpointing=False,
                 enable_progress_bar=True,
                 logger=False,
@@ -206,7 +202,7 @@ def predict_model(df, st, t_forecast):
             )
 
             trainer.fit(
-                tft,
+                model,
                 train_loader,
                 val_loader
             )
@@ -214,7 +210,7 @@ def predict_model(df, st, t_forecast):
             logger.error(f'Error trainer : {str(e)}')
 
         try:
-            raw_predictions = tft.predict(val_loader)
+            raw_predictions = model.predict(val_loader)
             logger.info(f'raw type : {type(raw_predictions)}')
 
             y_pred = raw_predictions.cpu().numpy()

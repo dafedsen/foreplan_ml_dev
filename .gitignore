@@ -28,6 +28,8 @@ db_dummy/
 # Directories
 main/
 stg/
+live/
+lightning_logs/
 
 # Python files
 check_ip.py
