@@ -16,13 +16,11 @@ import time
 import logging
 
 import torch
-import torch.nn as nn
-import torch.distributions as D
-from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.data import NaNLabelEncoder
-from pytorch_forecasting.models import TemporalFusionTransformer
+from pytorch_forecasting.models import DeepAR
+from pytorch_forecasting.metrics import QuantileLoss, NormalDistributionLoss
 from torchmetrics import MeanSquaredError
 from pytorch_forecasting.metrics import RMSE
 import lightning.pytorch as pl
@@ -122,9 +120,32 @@ def predict_model(df, st, t_forecast):
         try:
             encoder_length = min(14, max(2, df_t.shape[0] // 3))
             prediction_length = t_forecast.shape[0] + df_test.shape[0]
+            # prediction_length = min(3, df_test.shape[0])
+            # encoder_length = max(2, total_len - prediction_length - 1)
 
             max_encoder_length = encoder_length
             max_prediction_length = prediction_length
+
+            while True:
+                required_length = max_encoder_length + max_prediction_length
+
+                valid_series = (
+                    df_t.groupby("series")
+                    .filter(lambda x: len(x) >= required_length)
+                )
+
+                if len(valid_series) > 0:
+                    break
+                else:
+                    # shrink windows until valid
+                    if max_encoder_length > 2:
+                        max_encoder_length -= 1
+                    if max_prediction_length > 1:
+                        max_prediction_length -= 1
+
+                    # fail-safe to avoid infinite loop
+                    if max_encoder_length <= 2 and max_prediction_length <= 1:
+                        raise ValueError("No valid series found for DeepAR even after shrinking.")
 
             training_cutoff = df_t["time_idx"].max() - prediction_length
         except Exception as e:
@@ -141,11 +162,11 @@ def predict_model(df, st, t_forecast):
                 max_encoder_length=max_encoder_length,
                 min_prediction_length=max_prediction_length,
                 max_prediction_length=max_prediction_length,
-                static_categoricals=["series"],  # hanya 1 kategori
+                static_categoricals=["series"],
                 time_varying_known_categoricals=["dayofweek"],
-                time_varying_known_reals=["time_idx"],  # kita tahu time_idx di masa depan
-                time_varying_unknown_reals=["hist_value"],  # target di masa lalu
-                target_normalizer=None,  # bisa pakai Normalizer jika perlu
+                time_varying_known_reals=["time_idx"],
+                time_varying_unknown_reals=["hist_value"],
+                target_normalizer=None,
                 allow_missing_timesteps=True,
             )
         except Exception as e:
@@ -171,17 +192,14 @@ def predict_model(df, st, t_forecast):
             logger.error(f'Error data loader : {str(e)}')
 
         try:
-            tft = TemporalFusionTransformer.from_dataset(
+            model = DeepAR.from_dataset(
                 training,
                 hidden_size=64,
-                lstm_layers=2,
-                attention_head_size=4,
-                dropout=0.2,
-                hidden_continuous_size=16,
-                output_size=1,  # regresi
+                rnn_layers=2,
                 learning_rate=1e-3,
-                loss=RMSE(),
-                reduce_on_plateau_patience=4,
+                loss=NormalDistributionLoss(),
+                log_interval=10,
+                log_val_interval=1,
             )
         except Exception as e:
             logger.error(f'Error tft from dataset : {str(e)}')
@@ -197,7 +215,6 @@ def predict_model(df, st, t_forecast):
                 max_epochs=50,
                 accelerator='cuda',
                 devices=1,
-                callbacks=[checkpoint_callback],
                 enable_checkpointing=False,
                 enable_progress_bar=True,
                 logger=False,
@@ -206,7 +223,7 @@ def predict_model(df, st, t_forecast):
             )
 
             trainer.fit(
-                tft,
+                model,
                 train_loader,
                 val_loader
             )
@@ -214,7 +231,7 @@ def predict_model(df, st, t_forecast):
             logger.error(f'Error trainer : {str(e)}')
 
         try:
-            raw_predictions = tft.predict(val_loader)
+            raw_predictions = model.predict(val_loader)
             logger.info(f'raw type : {type(raw_predictions)}')
 
             y_pred = raw_predictions.cpu().numpy()
@@ -238,7 +255,7 @@ def predict_model(df, st, t_forecast):
 
 
     except Exception as e:
-        logger.error(f'Error Predict TFT: {e}')
+        logger.error(f'Error Predict Model: {e}')
         pred['date'] = t_forecast['date']
         pred[level2] = 0
         pred['level1'] = level1

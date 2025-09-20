@@ -15,7 +15,7 @@ import cudf as cd
 
 from scripts import auto_arima_gpu, linear_regression_gpu, exponential_smoothing_gpu, prophet_cpu
 from scripts import holt_winters_gpu, gradient_boosting_gpu, knn_gpu, cnn_lstm_pytorch_single, svm_gpu, lstnet_pytorch_single
-from scripts import deepar_pytorch, tft_pytorch, nbeats_pytorch
+from scripts import deepar_pytorch, tft_pytorch, nbeats_pytorch, deepar_pytorch_v2, deepvar_pytorch
 from scripts.connection import *
 from scripts.functions import extract_number
 
@@ -113,13 +113,17 @@ def run_forecast_task(id_user, id_prj, version_name, background_tasks):
         # 12
         if 'Temporal Fusion Transformer' in models:
             background_tasks.add_task(run_forecast_tft_bg, id_user, dbase, dbset, ex_id)
-            # background_tasks.add_task(run_forecast_nbeats_bg, id_user, dbase, dbset, ex_id)
             logger.info(f"TFT forecast running for project {id_prj} with version {version_name}.")
         
         # 13
         if 'N-BEATS' in models:
             background_tasks.add_task(run_forecast_nbeats_bg, id_user, dbase, dbset, ex_id)
             logger.info(f"N-BEATS forecast running for project {id_prj} with version {version_name}.")
+
+        # 14
+        if 'DeepVAR' in models:
+            background_tasks.add_task(run_forecast_deepvar_bg, id_user, dbase, dbset, ex_id)
+            logger.info(f"DeepVAR forecast running for project {id_prj} with version {version_name}.")
 
         return {"version_name": version_name, "id_prj": id_prj, "models": models}
 
@@ -256,7 +260,8 @@ def run_forecast_deepar_bg(id_user, dbase, dbset, ex_id):
         id_prj = dbset['id_prj'][0]
         id_cust = get_id_cust_from_id_prj(id_prj)
         logging_ml(id_user, id_prj, id_version, id_cust, "DeepAR", "RUNNING", "MODEL IS RUNNING", "tasks.py : run_deepar_bg", execution_id=ex_id)
-        deepar_pytorch.run_model(id_user, dbase, dbset, ex_id)
+        # deepar_pytorch.run_model(id_user, dbase, dbset, ex_id)
+        deepar_pytorch_v2.run_model(id_user, dbase, dbset, ex_id)
     except Exception as e:
         logger.error(f"Error in run_forecast_deepar: {str(e)}")
         update_process_status(id_prj, id_version, 'ERROR')
@@ -285,3 +290,15 @@ def run_forecast_nbeats_bg(id_user, dbase, dbset, ex_id):
         logger.error(f"Error in run_forecast_nbeats: {str(e)}")
         update_process_status(id_prj, id_version, 'ERROR')
         logging_ml(id_user, id_prj, id_version, id_cust, "N-BEATS", "ERROR", "MODEL IS FAILED", "tasks.py : run_nbeats_bg : " + str(e), execution_id=ex_id)
+
+def run_forecast_deepvar_bg(id_user, dbase, dbset, ex_id):
+    try:
+        id_version = extract_number(dbset['version_name'][0])
+        id_prj = dbset['id_prj'][0]
+        id_cust = get_id_cust_from_id_prj(id_prj)
+        logging_ml(id_user, id_prj, id_version, id_cust, "DeepVAR", "RUNNING", "MODEL IS RUNNING", "tasks.py : run_deepvar_bg", execution_id=ex_id)
+        deepvar_pytorch.run_model(id_user, dbase, dbset, ex_id)
+    except Exception as e:
+        logger.error(f"Error in run_forecast_deepvar: {str(e)}")
+        update_process_status(id_prj, id_version, 'ERROR')
+        logging_ml(id_user, id_prj, id_version, id_cust, "DeepVAR", "ERROR", "MODEL IS FAILED", "tasks.py : run_deepvar_bg : " + str(e), execution_id=ex_id)

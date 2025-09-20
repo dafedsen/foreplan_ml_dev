@@ -397,7 +397,7 @@ def run_tft(dbase, t_forecast, dbset):
         var_name='level2', 
         value_name='hist_value'
         )
-    forecast_result['id_model'] = 12
+    forecast_result['id_model'] = 13
 
     forecast_result['date'] = cd.to_datetime(forecast_result['date'])
     forecast_result = forecast_result.groupby(['level1', 'level2', 'adj_include', 'id_prj_prc']).apply(
@@ -420,7 +420,7 @@ def run_tft(dbase, t_forecast, dbset):
         var_name='err_method',
         value_name='err_value'
     )
-    error_result['id_model'] = 12
+    error_result['id_model'] = 13
     error_result['partition_cust_id'] = id_cust
     error_result = error_result.drop_duplicates()
     error_result.reset_index(drop=True, inplace=True)

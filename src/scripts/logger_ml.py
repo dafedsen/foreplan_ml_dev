@@ -45,12 +45,18 @@ def generate_unique_execution_id(conn):
 def logging_ml(id_user, id_prj, id_version, id_cust, model_name, status, description, details, 
                start_date=None, end_date=None, execution_id=None):  
     
-    date = datetime.datetime.now(pytz.timezone('Asia/Jakarta')).strftime("%Y-%m-%d %H:%M:%S")
+    tz = pytz.timezone("Asia/Jakarta")
+    date = datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S")
 
     if isinstance(start_date, (int, float)):
-        start_date = datetime.datetime.fromtimestamp(start_date)
+        start_date = datetime.datetime.fromtimestamp(start_date, tz).strftime("%Y-%m-%d %H:%M:%S")
+    elif isinstance(start_date, datetime.datetime):
+        start_date = start_date.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S") 
+
     if isinstance(end_date, (int, float)):
-        end_date = datetime.datetime.fromtimestamp(end_date)
+        end_date = datetime.datetime.fromtimestamp(end_date, tz).strftime("%Y-%m-%d %H:%M:%S")
+    elif isinstance(end_date, datetime.datetime):
+        end_date = end_date.astimezone(tz).strftime("%Y-%m-%d %H:%M:%S") 
 
     with engine.connect() as conn:
         if execution_id is None:
