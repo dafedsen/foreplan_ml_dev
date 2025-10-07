@@ -123,21 +123,50 @@ def predict_model(df, st, t_forecast):
             encoder_length = min(14, max(2, df_t.shape[0] // 3))
             prediction_length = t_forecast.shape[0] + df_test.shape[0]
 
+            # encoder_length = 1
+            # prediction_length = 1
+
             max_encoder_length = encoder_length
             max_prediction_length = prediction_length
+
+            # while True:
+            #     required_length = max_encoder_length + max_prediction_length
+
+            #     valid_series = (
+            #         df_t.groupby("series")
+            #         .filter(lambda x: len(x) >= required_length)
+            #     )
+
+            #     if len(valid_series) > 0:
+            #         break
+            #     else:
+            #         # shrink windows until valid
+            #         if max_encoder_length > 2:
+            #             max_encoder_length -= 1
+            #         if max_prediction_length > 1:
+            #             max_prediction_length -= 1
+
+            #         # fail-safe to avoid infinite loop
+            #         if max_encoder_length <= 2 and max_prediction_length <= 1:
+            #             raise ValueError("No valid series found for DeepAR even after shrinking.")
 
             training_cutoff = df_t["time_idx"].max() - prediction_length
         except Exception as e:
             logger.error(f'Error define params : {str(e)}')
 
+
         try:
-            print('Define training data')
+            logger.info(
+                f"Building dataset with cutoff={training_cutoff}, "
+                f"max_time_idx={df_t['time_idx'].max()}, "
+                f"encoder={max_encoder_length}, pred={max_prediction_length}, "
+            )
             training = TimeSeriesDataSet(
                 df_t[df_t["time_idx"] <= training_cutoff],
                 time_idx="time_idx",
                 target="hist_value",
                 group_ids=["series"],
-                min_encoder_length=max_encoder_length,
+                min_encoder_length=max_encoder_length // 2,
                 max_encoder_length=max_encoder_length,
                 min_prediction_length=max_prediction_length,
                 max_prediction_length=max_prediction_length,

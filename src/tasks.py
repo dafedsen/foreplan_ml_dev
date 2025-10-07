@@ -260,8 +260,8 @@ def run_forecast_deepar_bg(id_user, dbase, dbset, ex_id):
         id_prj = dbset['id_prj'][0]
         id_cust = get_id_cust_from_id_prj(id_prj)
         logging_ml(id_user, id_prj, id_version, id_cust, "DeepAR", "RUNNING", "MODEL IS RUNNING", "tasks.py : run_deepar_bg", execution_id=ex_id)
-        # deepar_pytorch.run_model(id_user, dbase, dbset, ex_id)
-        deepar_pytorch_v2.run_model(id_user, dbase, dbset, ex_id)
+        deepar_pytorch.run_model(id_user, dbase, dbset, ex_id)
+        # deepar_pytorch_v2.run_model(id_user, dbase, dbset, ex_id)
     except Exception as e:
         logger.error(f"Error in run_forecast_deepar: {str(e)}")
         update_process_status(id_prj, id_version, 'ERROR')

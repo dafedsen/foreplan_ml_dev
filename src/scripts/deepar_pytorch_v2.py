@@ -40,7 +40,7 @@ def run_model(id_user, dbase, dbset, ex_id):
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "TFT", "RUNNING", "Model is running", "tft_pytorch.py : run_model", execution_id=ex_id)
+        logging_ml(id_user, id_prj, id_version, id_cust, "DeepAR", "RUNNING", "Model is running", "deepar_pytorch.py : run_model", execution_id=ex_id)
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
@@ -48,10 +48,10 @@ def run_model(id_user, dbase, dbset, ex_id):
         pred, err = run_tft(dbase, t_forecast, dbset)
         end_time = time.time()
 
-        logger.info("Sending TFT Single forecast result.")
+        logger.info("Sending DeepAR Single forecast result.")
         send_process_result(pred, id_cust)
 
-        logger.info("Sending TFT Single forecast evaluation.")
+        logger.info("Sending DeepAR Single forecast evaluation.")
         send_process_evaluation(err, id_cust)
 
         print(str(timedelta(seconds=end_time - start_time)))
@@ -60,14 +60,14 @@ def run_model(id_user, dbase, dbset, ex_id):
         if status:
             update_end_date(id_prj, id_version)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "TFT", "FINISHED", "Finished running model", "tft_pytorch.py : run_model",
+        logging_ml(id_user, id_prj, id_version, id_cust, "DeepAR", "FINISHED", "Finished running model", "deepar_pytorch.py : run_model",
                    start_date=start_time, end_date=end_time, execution_id=ex_id)
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
-        logger.error(f"Error in tft_pytorch.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "TFT", "ERROR", "Error in running model", "tft_pytorch.py : run_model : " + str(e), execution_id=ex_id)
+        logger.error(f"Error in deepar_pytorch.run_model : {str(e)}")
+        logging_ml(id_user, id_prj, id_version, id_cust, "DeepAR", "ERROR", "Error in running model", "deepar_pytorch.py : run_model : " + str(e), execution_id=ex_id)
         update_process_status(id_prj, id_version, 'ERROR')
 
 def predict_model(df, st, t_forecast):
@@ -418,7 +418,7 @@ def run_tft(dbase, t_forecast, dbset):
         var_name='level2', 
         value_name='hist_value'
         )
-    forecast_result['id_model'] = 12
+    forecast_result['id_model'] = 11
 
     forecast_result['date'] = cd.to_datetime(forecast_result['date'])
     forecast_result = forecast_result.groupby(['level1', 'level2', 'adj_include', 'id_prj_prc']).apply(
@@ -441,7 +441,7 @@ def run_tft(dbase, t_forecast, dbset):
         var_name='err_method',
         value_name='err_value'
     )
-    error_result['id_model'] = 12
+    error_result['id_model'] = 11
     error_result['partition_cust_id'] = id_cust
     error_result = error_result.drop_duplicates()
     error_result.reset_index(drop=True, inplace=True)

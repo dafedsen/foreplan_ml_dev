@@ -145,4 +145,62 @@ class GPUMinMaxScaler:
 
         return (X_scaled - self.min_) / self.scale_
 
+def get_encoder_decoder_length(df, group_ids, freq: str):
+    series_lengths = df.groupby(group_ids).size()
+    min_series_len = series_lengths.min()
 
+    # aturan default per frekuensi
+    if freq.upper().startswith("D"):  # Daily
+        prediction_length = max(2, min(7, min_series_len // 5))
+    elif freq.upper().startswith("W"):  # Weekly
+        prediction_length = max(2, min(4, min_series_len // 3))
+    elif freq.upper().startswith("M"):  # Monthly
+        prediction_length = max(2, min(3, min_series_len // 2))
+    else:
+        prediction_length = max(2, min(5, min_series_len // 5))
+
+    encoder_length = max(2, min(min_series_len - prediction_length, prediction_length * 2))
+
+    # fallback kalau terlalu pendek
+    if encoder_length + prediction_length > min_series_len:
+        encoder_length = max(2, min_series_len - 1)
+        prediction_length = max(1, min_series_len - encoder_length)
+
+    return {
+        "encoder_length": int(encoder_length),
+        "prediction_length": int(prediction_length),
+        "min_series_len": int(min_series_len),
+    }
+
+def safe_training_cutoff(df, time_idx_col, prediction_length, buffer: int = 1):
+    """
+    Pastikan training_cutoff cukup mundur supaya decoder window muat.
+    """
+    max_idx = df[time_idx_col].max()
+    cutoff = max_idx - prediction_length - buffer
+    if cutoff <= df[time_idx_col].min():
+        raise ValueError(
+            f"Cutoff {cutoff} too kecil untuk series length {max_idx}. "
+            f"Coba kurangi prediction_length."
+        )
+    return cutoff
+
+def adjust_params(df, encoder_length, prediction_length):
+    """
+    Adjust encoder, prediction, cutoff, and min_series_len automatically
+    based on dataset length.
+    """
+    max_time_idx = df["time_idx"].max()
+
+    # minimal panjang series yg bisa dipakai
+    min_series_len = encoder_length + prediction_length  
+
+    # cutoff otomatis (pastikan masih ada ruang prediksi)
+    cutoff = max_time_idx - prediction_length
+
+    return {
+        "encoder_length": encoder_length,
+        "prediction_length": prediction_length,
+        "min_series_len": min_series_len,
+        "cutoff": cutoff,
+    }
