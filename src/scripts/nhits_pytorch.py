@@ -19,7 +19,7 @@ import torch
 
 from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.data import NaNLabelEncoder
-from pytorch_forecasting.models import NHiTS
+from pytorch_forecasting import NHiTS
 from pytorch_forecasting.metrics import QuantileLoss, NormalDistributionLoss, MultivariateNormalDistributionLoss
 from torchmetrics import MeanSquaredError
 from pytorch_forecasting.metrics import RMSE
@@ -31,6 +31,9 @@ from cuml.metrics import r2_score, mean_squared_error
 logger = logging.getLogger(__name__)
 DEVICE = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 
+MODEL_ID = 12 # NHITS 14
+MODEL_NAME = 'NHITS'
+
 def run_model(id_user, dbase, dbset, ex_id):
     try:
         logger.info("TFT Single forecast running.")
@@ -40,18 +43,18 @@ def run_model(id_user, dbase, dbset, ex_id):
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "DeepVAR", "RUNNING", "Model is running", "deepvar_pytorch.py : run_model", execution_id=ex_id)
+        logging_ml(id_user, id_prj, id_version, id_cust, "NHITS", "RUNNING", "Model is running", "nhits_pytorch.py : run_model", execution_id=ex_id)
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
         start_time = time.time()
-        pred, err = run_tft(dbase, t_forecast, dbset)
+        pred, err = run_nhits(dbase, t_forecast, dbset)
         end_time = time.time()
 
-        logger.info("Sending DeepVAR Single forecast result.")
+        logger.info("Sending NHITS Single forecast result.")
         send_process_result(pred, id_cust)
 
-        logger.info("Sending DeepVAR Single forecast evaluation.")
+        logger.info("Sending NHITS Single forecast evaluation.")
         send_process_evaluation(err, id_cust)
 
         print(str(timedelta(seconds=end_time - start_time)))
@@ -60,14 +63,14 @@ def run_model(id_user, dbase, dbset, ex_id):
         if status:
             update_end_date(id_prj, id_version)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "DeepVAR", "FINISHED", "Finished running model", "deepvar_pytorch.py : run_model",
+        logging_ml(id_user, id_prj, id_version, id_cust, "NHITS", "FINISHED", "Finished running model", "nhits_pytorch.py : run_model",
                    start_date=start_time, end_date=end_time, execution_id=ex_id)
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
-        logger.error(f"Error in tft_pytorch.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "DeepVAR", "ERROR", "Error in running model", "deepvar_pytorch.py : run_model : " + str(e), execution_id=ex_id)
+        logger.error(f"Error in nhits_pytorch.run_model : {str(e)}")
+        logging_ml(id_user, id_prj, id_version, id_cust, "NHITS", "ERROR", "Error in running model", "nhits_pytorch.py : run_model : " + str(e), execution_id=ex_id)
         update_process_status(id_prj, id_version, 'ERROR')
 
 def predict_model(df, st, t_forecast):
@@ -126,56 +129,17 @@ def predict_model(df, st, t_forecast):
             max_encoder_length = encoder_length
             max_prediction_length = prediction_length
 
-            while True:
-                required_length = max_encoder_length + max_prediction_length
-
-                valid_series = (
-                    df_t.groupby("series")
-                    .filter(lambda x: len(x) >= required_length)
-                )
-
-                if len(valid_series) > 0:
-                    break
-                else:
-                    # shrink windows until valid
-                    if max_encoder_length > 2:
-                        max_encoder_length -= 1
-                    if max_prediction_length > 1:
-                        max_prediction_length -= 1
-
-                    # fail-safe to avoid infinite loop
-                    if max_encoder_length <= 2 and max_prediction_length <= 1:
-                        raise ValueError("No valid series found for DeepAR even after shrinking.")
-
             training_cutoff = df_t["time_idx"].max() - prediction_length
         except Exception as e:
             logger.error(f'Error define params : {str(e)}')
 
         try:
             print('Define training data')
-            training = TimeSeriesDataSet(
-                df_t[df_t["time_idx"] <= training_cutoff],
-                time_idx="time_idx",
-                target="hist_value",
-                group_ids=["series"],
-                min_encoder_length=max_encoder_length,
-                max_encoder_length=max_encoder_length,
-                min_prediction_length=max_prediction_length,
-                max_prediction_length=max_prediction_length,
-                static_categoricals=["series"],
-                time_varying_known_categoricals=["dayofweek"],
-                time_varying_known_reals=["time_idx"],
-                time_varying_unknown_reals=["hist_value"],
-                target_normalizer=None,
-                allow_missing_timesteps=True,
-            )
+            training, validation, encoder_length, prediction_length = build_dataset_nhits(df_t)
+            print("Encoder length:", training.max_encoder_length)
+            print("Decoder length:", training.max_prediction_length)
         except Exception as e:
             logger.error(f'Error training data : {str(e)}')
-
-        try:
-            validation = TimeSeriesDataSet.from_dataset(training, df_t, predict=True, stop_randomization=True)
-        except Exception as e:
-            logger.error(f'Error validation data : {str(e)}')
 
         try:
             train_loader = training.to_dataloader(
@@ -192,24 +156,23 @@ def predict_model(df, st, t_forecast):
             logger.error(f'Error data loader : {str(e)}')
 
         try:
-            model = DeepAR.from_dataset(
+            # ERROR DISINI
+            model = NHiTS.from_dataset(
                 training,
-                hidden_size=64,
-                rnn_layers=2,
                 learning_rate=1e-3,
-                loss=MultivariateNormalDistributionLoss(),
                 log_interval=10,
                 log_val_interval=1,
+                weight_decay=1e-2,
+                loss=RMSE(),
+                hidden_size=[64, 128, 256],  # 3 stack
+                n_blocks=[1, 1, 1],          # tiap stack 1 blok
+                dropout=[0.1, 0.1, 0.1],     # sama panjangnya
+                activation="ReLU",
             )
         except Exception as e:
             logger.error(f'Error from dataset : {str(e)}')
 
         try:
-            checkpoint_callback = ModelCheckpoint(
-                save_top_k=1,
-                monitor="val_loss",
-                mode="min"
-            )
 
             trainer = pl.Trainer(
                 max_epochs=50,
@@ -231,16 +194,74 @@ def predict_model(df, st, t_forecast):
             logger.error(f'Error trainer : {str(e)}')
 
         try:
-            raw_predictions = model.predict(val_loader)
-            logger.info(f'raw type : {type(raw_predictions)}')
+            # --- Setup awal ---
+            horizon = len(t_forecast)
+            y_pred_total = []
 
-            y_pred = raw_predictions.cpu().numpy()
-            y_pred = scaler.inverse_transform(cp.array(y_pred).reshape(-1, 1)).reshape(y_pred.shape)
+            # ambil panjang prediksi dari dataset (lebih stabil daripada model.hparams)
+            pred_len = getattr(training, "max_prediction_length", 1)
+            if not isinstance(pred_len, int) or pred_len <= 0:
+                pred_len = 1  # fallback default
 
-            if y_pred.ndim == 2 and y_pred.shape[0] == 1:
-                y_pred = y_pred[0]
+            logger.info(f"Forecasting autoregressive: horizon={horizon}, step={pred_len}")
+
+            # siapkan dataset untuk iterasi
+            dataset_iter = training
+            current_input = dataset_iter
+            total_generated = 0
+
+            # --- Loop autoregressive ---
+            while total_generated < horizon:
+                # predict batch
+                raw_predictions = model.predict(current_input, mode="prediction")
+
+                # pastikan tensor di CPU
+                if isinstance(raw_predictions, torch.Tensor):
+                    raw_predictions = raw_predictions.detach().cpu().numpy()
+                else:
+                    raw_predictions = np.array(raw_predictions)
+
+                # ubah ke bentuk 1D
+                y_pred_batch = raw_predictions.flatten()
+
+                # inverse scaling (jika pakai cupy scaler)
+                try:
+                    y_pred_batch = scaler.inverse_transform(cp.array(y_pred_batch).reshape(-1, 1)).get().flatten()
+                except Exception:
+                    y_pred_batch = scaler.inverse_transform(y_pred_batch.reshape(-1, 1)).flatten()
+
+                # simpan hasil prediksi
+                y_pred_total.extend(y_pred_batch.tolist())
+                total_generated += len(y_pred_batch)
+                logger.info(f"Generated {total_generated}/{horizon} steps")
+
+                # hentikan kalau sudah cukup
+                if total_generated >= horizon:
+                    break
+
+                # tambahkan prediksi ke dataset untuk step berikutnya
+                next_data = dataset_iter.data.copy()
+                max_time_idx = next_data["time_idx"].max()
+
+                # tambahkan data baru hasil prediksi
+                for i, val in enumerate(y_pred_batch):
+                    next_data = pd.concat([
+                        next_data,
+                        pd.DataFrame({
+                            "time_idx": [max_time_idx + i + 1],
+                            "hist_value": [val],
+                            "series": [next_data["series"].iloc[0]],
+                        })
+                    ], ignore_index=True)
+
+                # buat ulang dataset untuk langkah berikutnya
+                current_input = TimeSeriesDataSet.from_dataset(dataset_iter, next_data, predict=True)
+
+            # pastikan panjang sama dengan horizon
+            y_pred = np.array(y_pred_total[:horizon])
+
         except Exception as e:
-            logger.error(f'Error predict y_pred : {str(e)}')
+            logger.error(f'Error autoregressive predict : {str(e)}')
 
 
         logger.info(f't_forecast shape : {t_forecast.shape}')
@@ -311,7 +332,7 @@ def predict_model(df, st, t_forecast):
     return pred, err
 
 
-def run_tft(dbase, t_forecast, dbset):
+def run_nhits(dbase, t_forecast, dbset):
 
     project = int(dbase['id_prj'].iloc[0].item())
     id_version = extract_number(dbset['version_name'].iloc[0])
@@ -418,7 +439,7 @@ def run_tft(dbase, t_forecast, dbset):
         var_name='level2', 
         value_name='hist_value'
         )
-    forecast_result['id_model'] = 13
+    forecast_result['id_model'] = MODEL_ID
 
     forecast_result['date'] = cd.to_datetime(forecast_result['date'])
     forecast_result = forecast_result.groupby(['level1', 'level2', 'adj_include', 'id_prj_prc']).apply(
@@ -441,7 +462,7 @@ def run_tft(dbase, t_forecast, dbset):
         var_name='err_method',
         value_name='err_value'
     )
-    error_result['id_model'] = 13
+    error_result['id_model'] = MODEL_ID
     error_result['partition_cust_id'] = id_cust
     error_result = error_result.drop_duplicates()
     error_result.reset_index(drop=True, inplace=True)
@@ -458,3 +479,87 @@ def run_tft(dbase, t_forecast, dbset):
     error_result['err_value'] = error_result['err_value'].astype(float).round(3)
 
     return forecast_result, error_result
+
+def detect_freq(df: pd.DataFrame, date_col: str = "date") -> str:
+    """Deteksi frekuensi otomatis (D, W, M)."""
+    freq = pd.infer_freq(df[date_col].sort_values())
+    if freq is None:
+        # fallback jika tidak terdeteksi
+        deltas = df[date_col].sort_values().diff().dropna().value_counts()
+        if not deltas.empty:
+            most_common_delta = deltas.index[0].days
+            if most_common_delta >= 25:
+                freq = "M"
+            elif most_common_delta >= 6:
+                freq = "W"
+            else:
+                freq = "D"
+        else:
+            freq = "D"
+    logger.info(f"Detected frequency: {freq}")
+    return freq
+
+
+def get_adaptive_lengths(freq: str, series_length: int):
+    """Tentukan encoder/prediction length otomatis berdasarkan frekuensi & panjang data."""
+    if freq.startswith("D"):  # harian
+        encoder_length = min(30, max(7, series_length // 2))
+        prediction_length = min(7, max(1, series_length // 8))
+    elif freq.startswith("W"):  # mingguan
+        encoder_length = min(12, max(4, series_length // 2))
+        prediction_length = min(4, max(1, series_length // 8))
+    elif freq.startswith("M"):  # bulanan
+        encoder_length = min(12, max(3, series_length // 2))
+        prediction_length = min(3, max(1, series_length // 8))
+    else:
+        encoder_length = min(12, max(4, series_length // 2))
+        prediction_length = min(4, max(1, series_length // 8))
+
+    logger.info(f"Adjusted params -> encoder={encoder_length}, prediction={prediction_length}")
+    return int(encoder_length), int(prediction_length)
+
+
+def build_dataset_nhits(df_t: pd.DataFrame):
+    """
+    Build training & validation dataset for NHITS model (universal for daily/weekly/monthly).
+    df_t harus punya kolom: ['series', 'date', 'time_idx', 'hist_value']
+    """
+    try:
+        freq = detect_freq(df_t, "hist_date")
+        series_len = df_t.groupby("series").size().min()  # ambil minimal panjang seri
+        logger.info(f"Min series length: {series_len}")
+
+        encoder_length, prediction_length = get_adaptive_lengths(freq, series_len)
+
+        # cutoff training data
+        training_cutoff = df_t["time_idx"].max() - prediction_length
+        logger.info(f"Building dataset with cutoff={training_cutoff}, max_time_idx={df_t['time_idx'].max()}")
+
+        # buat dataset training
+        training = TimeSeriesDataSet(
+            df_t[df_t.time_idx <= training_cutoff],
+            time_idx="time_idx",
+            target="hist_value",
+            group_ids=["series"],
+            max_encoder_length=encoder_length,
+            min_encoder_length=encoder_length,  # fixed untuk NHITS
+            max_prediction_length=prediction_length,
+            min_prediction_length=prediction_length,  # fixed juga
+            time_varying_known_reals=["time_idx"],
+            time_varying_unknown_reals=["hist_value"],
+            allow_missing_timesteps=True,
+        )
+
+        # buat dataset validasi
+        validation = TimeSeriesDataSet.from_dataset(
+            training,
+            df_t,
+            min_prediction_idx=training_cutoff + 1
+        )
+
+        logger.info("Dataset created successfully for NHITS.")
+        return training, validation, encoder_length, prediction_length
+
+    except Exception as e:
+        logger.error(f"Error building dataset NHITS: {str(e)}")
+        raise

@@ -112,7 +112,9 @@ def run_forecast_task(id_user, id_prj, version_name, background_tasks):
 
         # 12
         if 'Temporal Fusion Transformer' in models:
-            background_tasks.add_task(run_forecast_tft_bg, id_user, dbase, dbset, ex_id)
+            # background_tasks.add_task(run_forecast_tft_bg, id_user, dbase, dbset, ex_id)
+            # background_tasks.add_task(run_forecast_nbeats_bg, id_user, dbase, dbset, ex_id)
+            background_tasks.add_task(run_forecast_nhits_bg, id_user, dbase, dbset, ex_id)
             logger.info(f"TFT forecast running for project {id_prj} with version {version_name}.")
         
         # 13
@@ -124,6 +126,11 @@ def run_forecast_task(id_user, id_prj, version_name, background_tasks):
         if 'DeepVAR' in models:
             background_tasks.add_task(run_forecast_deepvar_bg, id_user, dbase, dbset, ex_id)
             logger.info(f"DeepVAR forecast running for project {id_prj} with version {version_name}.")
+
+        # 15
+        if 'NHITS' in models:
+            background_tasks.add_task(run_forecast_nhits_bg, id_user, dbase, dbset, ex_id)
+            logger.info(f"NHITS forecast running for project {id_prj} with version {version_name}.")
 
         return {"version_name": version_name, "id_prj": id_prj, "models": models}
 
@@ -302,3 +309,16 @@ def run_forecast_deepvar_bg(id_user, dbase, dbset, ex_id):
         logger.error(f"Error in run_forecast_deepvar: {str(e)}")
         update_process_status(id_prj, id_version, 'ERROR')
         logging_ml(id_user, id_prj, id_version, id_cust, "DeepVAR", "ERROR", "MODEL IS FAILED", "tasks.py : run_deepvar_bg : " + str(e), execution_id=ex_id)
+
+def run_forecast_nhits_bg(id_user, dbase, dbset, ex_id):
+    try:
+        id_version = extract_number(dbset['version_name'][0])
+        id_prj = dbset['id_prj'][0]
+        id_cust = get_id_cust_from_id_prj(id_prj)
+        logging_ml(id_user, id_prj, id_version, id_cust, "NHITS", "RUNNING", "MODEL IS RUNNING", "tasks.py : run_nhits_bg", execution_id=ex_id)
+        import scripts.nhits_pytorch as nhits_pytorch
+        nhits_pytorch.run_model(id_user, dbase, dbset, ex_id)
+    except Exception as e:
+        logger.error(f"Error in run_forecast_nhits: {str(e)}")
+        update_process_status(id_prj, id_version, 'ERROR')
+        logging_ml(id_user, id_prj, id_version, id_cust, "NHITS", "ERROR", "MODEL IS FAILED", "tasks.py : run_nhits_bg : " + str(e), execution_id=ex_id)

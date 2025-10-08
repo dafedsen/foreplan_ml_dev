@@ -33,28 +33,29 @@ from cuml.metrics import r2_score, mean_squared_error
 
 logger = logging.getLogger(__name__)
 DEVICE = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+ID_MODEL = 12  # N-BEATS 13
 
 def run_model(id_user, dbase, dbset, ex_id):
     try:
-        logger.info("TFT Single forecast running.")
+        logger.info("NBEATS Single forecast running.")
         id_prj = int(dbase['id_prj'].iloc[0].item())
         version_name = dbase['version_name'].iloc[0]
 
         id_cust = get_id_cust_from_id_prj(id_prj)
         id_version = extract_number(version_name)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "TFT", "RUNNING", "Model is running", "tft_pytorch.py : run_model", execution_id=ex_id)
+        logging_ml(id_user, id_prj, id_version, id_cust, "NBEATS", "RUNNING", "Model is running", "nbeats_pytorch.py : run_model", execution_id=ex_id)
 
         t_forecast = get_forecast_time(dbase, dbset)    
 
         start_time = time.time()
-        pred, err = run_tft(dbase, t_forecast, dbset)
+        pred, err = run_nbeats(dbase, t_forecast, dbset)
         end_time = time.time()
 
-        logger.info("Sending TFT Single forecast result.")
+        logger.info("Sending NBEATS Single forecast result.")
         send_process_result(pred, id_cust)
 
-        logger.info("Sending TFT Single forecast evaluation.")
+        logger.info("Sending NBEATS Single forecast evaluation.")
         send_process_evaluation(err, id_cust)
 
         print(str(timedelta(seconds=end_time - start_time)))
@@ -63,14 +64,14 @@ def run_model(id_user, dbase, dbset, ex_id):
         if status:
             update_end_date(id_prj, id_version)
 
-        logging_ml(id_user, id_prj, id_version, id_cust, "TFT", "FINISHED", "Finished running model", "tft_pytorch.py : run_model",
+        logging_ml(id_user, id_prj, id_version, id_cust, "NBEATS", "FINISHED", "Finished running model", "nbeats_pytorch.py : run_model",
                    start_date=start_time, end_date=end_time, execution_id=ex_id)
 
         return str(timedelta(seconds=end_time - start_time))
     
     except Exception as e:
-        logger.error(f"Error in tft_pytorch.run_model : {str(e)}")
-        logging_ml(id_user, id_prj, id_version, id_cust, "TFT", "ERROR", "Error in running model", "tft_pytorch.py : run_model : " + str(e), execution_id=ex_id)
+        logger.error(f"Error in nbeats_pytorch.run_model : {str(e)}")
+        logging_ml(id_user, id_prj, id_version, id_cust, "NBEATS", "ERROR", "Error in running model", "nbeats_pytorch.py : run_model : " + str(e), execution_id=ex_id)
         update_process_status(id_prj, id_version, 'ERROR')
 
 def predict_model(df, st, t_forecast):
@@ -132,27 +133,34 @@ def predict_model(df, st, t_forecast):
 
         try:
             print('Define training data')
-            training = TimeSeriesDataSet(
-                df_t[df_t["time_idx"] <= training_cutoff],
-                time_idx="time_idx",
-                target="hist_value",
-                group_ids=["series"],
-                min_encoder_length=max_encoder_length,
-                max_encoder_length=max_encoder_length,
-                min_prediction_length=max_prediction_length,
-                max_prediction_length=max_prediction_length,
-                # time_varying_known_categoricals=["month", "dayofweek"],
-                time_varying_unknown_reals=["hist_value"],  # target di masa lalu
-                target_normalizer=TorchNormalizer(method="standard"),  # bisa pakai Normalizer jika perlu
-                allow_missing_timesteps=True,
+            # training = TimeSeriesDataSet(
+            #     df_t[df_t["time_idx"] <= training_cutoff],
+            #     time_idx="time_idx",
+            #     target="hist_value",
+            #     group_ids=["series"],
+            #     min_encoder_length=max_encoder_length,
+            #     max_encoder_length=max_encoder_length,
+            #     min_prediction_length=max_prediction_length,
+            #     max_prediction_length=max_prediction_length,
+            #     # time_varying_known_categoricals=["month", "dayofweek"],
+            #     time_varying_unknown_reals=["hist_value"],  # target di masa lalu
+            #     target_normalizer=TorchNormalizer(method="standard"),  # bisa pakai Normalizer jika perlu
+            #     allow_missing_timesteps=True,
+            # )
+            training, validation = build_universal_nbeats_dataset(
+                df_t,
+                time_col="hist_date",
+                group_col="series",
+                target_col="hist_value"
             )
+            logger.info(f'training type : {type(training)}')
         except Exception as e:
             logger.error(f'Error training data : {str(e)}')
 
-        try:
-            validation = TimeSeriesDataSet.from_dataset(training, df_t, predict=True, stop_randomization=True)
-        except Exception as e:
-            logger.error(f'Error validation data : {str(e)}')
+        # try:
+        #     validation = TimeSeriesDataSet.from_dataset(training, df_t, predict=True, stop_randomization=True)
+        # except Exception as e:
+        #     logger.error(f'Error validation data : {str(e)}')
 
         try:
             train_loader = training.to_dataloader(
@@ -209,17 +217,95 @@ def predict_model(df, st, t_forecast):
         except Exception as e:
             logger.error(f'Error trainer : {str(e)}')
 
+        # try:
+        #     raw_predictions = model.predict(val_loader)
+        #     logger.info(f'raw type : {type(raw_predictions)}')
+
+        #     y_pred = raw_predictions.cpu().numpy()
+        #     y_pred = scaler.inverse_transform(cp.array(y_pred).reshape(-1, 1)).reshape(y_pred.shape)
+
+        #     if y_pred.ndim == 2 and y_pred.shape[0] == 1:
+        #         y_pred = y_pred[0]
+
+        #     # ensure same length
+        #     if len(y_pred) < len(t_forecast):
+        #         diff = len(t_forecast) - len(y_pred)
+        #         last_val = y_pred[-1] if len(y_pred) > 0 else np.nan
+        #         y_pred = np.concatenate([y_pred, np.full(diff, last_val)])
+        #     elif len(y_pred) > len(t_forecast):
+        #         y_pred = y_pred[:len(t_forecast)]
+        # except Exception as e:
+        #     logger.error(f'Error predict y_pred : {str(e)}')
+
         try:
-            raw_predictions = model.predict(val_loader)
-            logger.info(f'raw type : {type(raw_predictions)}')
+            # --- Setup awal ---
+            horizon = len(t_forecast)
+            y_pred_total = []
 
-            y_pred = raw_predictions.cpu().numpy()
-            y_pred = scaler.inverse_transform(cp.array(y_pred).reshape(-1, 1)).reshape(y_pred.shape)
+            # ambil panjang prediksi dari dataset (lebih stabil daripada model.hparams)
+            pred_len = getattr(training, "max_prediction_length", 1)
+            if not isinstance(pred_len, int) or pred_len <= 0:
+                pred_len = 1  # fallback default
 
-            if y_pred.ndim == 2 and y_pred.shape[0] == 1:
-                y_pred = y_pred[0]
+            logger.info(f"Forecasting autoregressive: horizon={horizon}, step={pred_len}")
+
+            # siapkan dataset untuk iterasi
+            dataset_iter = training
+            current_input = dataset_iter
+            total_generated = 0
+
+            # --- Loop autoregressive ---
+            while total_generated < horizon:
+                # predict batch
+                raw_predictions = model.predict(current_input, mode="prediction")
+
+                # pastikan tensor di CPU
+                if isinstance(raw_predictions, torch.Tensor):
+                    raw_predictions = raw_predictions.detach().cpu().numpy()
+                else:
+                    raw_predictions = np.array(raw_predictions)
+
+                # ubah ke bentuk 1D
+                y_pred_batch = raw_predictions.flatten()
+
+                # inverse scaling (jika pakai cupy scaler)
+                try:
+                    y_pred_batch = scaler.inverse_transform(cp.array(y_pred_batch).reshape(-1, 1)).get().flatten()
+                except Exception:
+                    y_pred_batch = scaler.inverse_transform(y_pred_batch.reshape(-1, 1)).flatten()
+
+                # simpan hasil prediksi
+                y_pred_total.extend(y_pred_batch.tolist())
+                total_generated += len(y_pred_batch)
+                logger.info(f"Generated {total_generated}/{horizon} steps")
+
+                # hentikan kalau sudah cukup
+                if total_generated >= horizon:
+                    break
+
+                # tambahkan prediksi ke dataset untuk step berikutnya
+                next_data = dataset_iter.data.copy()
+                max_time_idx = next_data["time_idx"].max()
+
+                # tambahkan data baru hasil prediksi
+                for i, val in enumerate(y_pred_batch):
+                    next_data = pd.concat([
+                        next_data,
+                        pd.DataFrame({
+                            "time_idx": [max_time_idx + i + 1],
+                            "hist_value": [val],
+                            "series": [next_data["series"].iloc[0]],
+                        })
+                    ], ignore_index=True)
+
+                # buat ulang dataset untuk langkah berikutnya
+                current_input = TimeSeriesDataSet.from_dataset(dataset_iter, next_data, predict=True)
+
+            # pastikan panjang sama dengan horizon
+            y_pred = np.array(y_pred_total[:horizon])
+
         except Exception as e:
-            logger.error(f'Error predict y_pred : {str(e)}')
+            logger.error(f'Error autoregressive predict : {str(e)}')
 
 
         logger.info(f't_forecast shape : {t_forecast.shape}')
@@ -245,8 +331,10 @@ def predict_model(df, st, t_forecast):
         
     
     try:
-        y_test = y_pred[:df_test.shape[0]]
-        y_act = df_test['hist_value']
+        # y_test = y_pred[:df_test.shape[0]]
+        # y_act = df_test['hist_value']
+        y_test = cp.asarray(y_pred[:df_test.shape[0]])
+        y_act = cp.asarray(df_test['hist_value'].values)
         logger.info(f'y_test shape : {y_test.shape}')
         logger.info(f'y_act shape : {y_act.shape}')
 
@@ -290,7 +378,7 @@ def predict_model(df, st, t_forecast):
     return pred, err
 
 
-def run_tft(dbase, t_forecast, dbset):
+def run_nbeats(dbase, t_forecast, dbset):
 
     project = int(dbase['id_prj'].iloc[0].item())
     id_version = extract_number(dbset['version_name'].iloc[0])
@@ -397,7 +485,7 @@ def run_tft(dbase, t_forecast, dbset):
         var_name='level2', 
         value_name='hist_value'
         )
-    forecast_result['id_model'] = 13
+    forecast_result['id_model'] = ID_MODEL
 
     forecast_result['date'] = cd.to_datetime(forecast_result['date'])
     forecast_result = forecast_result.groupby(['level1', 'level2', 'adj_include', 'id_prj_prc']).apply(
@@ -420,7 +508,7 @@ def run_tft(dbase, t_forecast, dbset):
         var_name='err_method',
         value_name='err_value'
     )
-    error_result['id_model'] = 13
+    error_result['id_model'] = ID_MODEL
     error_result['partition_cust_id'] = id_cust
     error_result = error_result.drop_duplicates()
     error_result.reset_index(drop=True, inplace=True)
@@ -437,3 +525,79 @@ def run_tft(dbase, t_forecast, dbset):
     error_result['err_value'] = error_result['err_value'].astype(float).round(3)
 
     return forecast_result, error_result
+
+def build_universal_nbeats_dataset(df, time_col, group_col, target_col):
+    df = df.sort_values([group_col, time_col])
+    df[time_col] = pd.to_datetime(df[time_col])
+
+    # --- Drop series terlalu pendek ---
+    valid_groups = df.groupby(group_col).filter(lambda x: len(x) >= 3)
+    removed = set(df[group_col]) - set(valid_groups[group_col])
+    if removed:
+        logger.warning(f"Removed {len(removed)} short series (len < 3): {list(removed)[:3]}...")
+    df = valid_groups
+
+    # --- Detect frequency ---
+    try:
+        inferred_freq = pd.infer_freq(df[time_col].sort_values())
+    except Exception:
+        inferred_freq = None
+    freq = inferred_freq or "D"
+    logger.info(f"Detected frequency: {freq}")
+
+    # --- Min length per series ---
+    min_series_len = df.groupby(group_col)[time_col].count().min()
+    logger.info(f"Min series length: {min_series_len}")
+
+    # --- Auto-adjust encoder/prediction ---
+    if freq.startswith("D"):
+        encoder_length = int(min(60, max(14, min_series_len // 2)))
+        prediction_length = int(min(30, max(7, encoder_length // 2)))
+    elif freq.startswith("W"):
+        encoder_length = int(min(12, max(4, min_series_len // 2)))
+        prediction_length = int(min(4, max(2, encoder_length // 3)))
+    elif freq.startswith("M"):
+        encoder_length = int(min(24, max(6, min_series_len // 2)))
+        prediction_length = int(min(3, max(1, encoder_length // 4)))
+    else:
+        encoder_length = int(min(30, max(7, min_series_len // 2)))
+        prediction_length = int(min(7, max(2, encoder_length // 3)))
+
+    logger.info(f"Adjusted params -> encoder={encoder_length}, prediction={prediction_length}")
+
+    # --- Buat time_idx per series ---
+    df = df.copy()
+    df["time_idx"] = df.groupby(group_col).cumcount()
+
+    # --- Tentukan cutoff otomatis ---
+    max_time_idx = df["time_idx"].max()
+    cutoff = int(max_time_idx - prediction_length)
+    logger.info(f"Building dataset with cutoff={cutoff}, max_time_idx={max_time_idx}")
+
+    try:
+        training = TimeSeriesDataSet(
+            df[df["time_idx"] <= cutoff],
+            time_idx="time_idx",
+            target=target_col,
+            group_ids=[group_col],
+            min_encoder_length=encoder_length,
+            max_encoder_length=encoder_length,
+            min_prediction_length=prediction_length,
+            max_prediction_length=prediction_length,
+            time_varying_unknown_reals=[target_col],
+            allow_missing_timesteps=True,  # ✅ penting untuk weekly/monthly
+        )
+
+        validation = TimeSeriesDataSet.from_dataset(
+            training,
+            df,
+            predict=True,
+            stop_randomization=True
+        )
+
+        logger.info(f"Dataset created successfully with {len(training)} samples.")
+        return training, validation
+
+    except Exception as e:
+        logger.error(f"Error from dataset : {e}")
+        raise
